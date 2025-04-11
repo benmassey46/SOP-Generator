@@ -25,6 +25,7 @@ import json # <<<--- NEW: For potentially saving structured review data
 import textwrap # For formatting saved reports
 from html import escape # For HTML escaping in PDF generation
 
+
 # <<<--- NEW PDF Generation Imports --->>>
 try:
     import markdown2
@@ -392,6 +393,11 @@ DEFAULT_TARGET_AUDIENCE = TARGET_AUDIENCES[-1] # Set the default selection
 # Markers for examples in the prompt
 EXAMPLE_START_MARKER = "--- EXAMPLE START ---"
 EXAMPLE_END_MARKER   = "--- EXAMPLE END ---"
+
+FLESCH_EASE_REF = "(Scale: 0-100. 90-100: Very Easy; 60-70: Plain English; 0-30: Very Difficult)"
+GUNNING_FOG_REF = "(Score approximates US grade level needed. Lower is generally clearer. >12 often considered difficult.)"
+AVG_SENT_LEN_REF = "(Shorter sentences (e.g., 15-20 words) are often easier to read.)"
+PASSIVE_VOICE_REF = "(High % can make text less direct. Aim depends on context.)"
 
 # Tracking initial model loads for UI reveal
 initial_loads_pending = 0
@@ -5843,7 +5849,6 @@ def calculate_automated_metrics(sop_text):
     metrics = {
         "readability": {"flesch_reading_ease": None, "gunning_fog": None, "avg_sentence_length": None},
         "structure": {"section_headings": [], "list_item_count": 0, "heading_levels": {}, "list_types": set()},
-        # <<<--- NEW: Add categories for other checks --->>>
         "clarity_proxy": {"passive_voice_sentences": 0, "total_sentences": 0, "passive_voice_ratio": None},
         "completeness_proxy": {"standard_sections_found": [], "standard_sections_missing": []},
         "consistency_proxy": {"heading_level_usage": {}, "list_type_usage": "N/A"}
@@ -5856,52 +5861,95 @@ def calculate_automated_metrics(sop_text):
 
     # --- Readability (Requires textstat and NLTK) ---
     avg_sent_len = None
+    flesch_score = None # Use temp vars
+    gunning_score = None
     if TEXTSTAT_AVAILABLE:
         try:
-            metrics["readability"]["flesch_reading_ease"] = textstat.flesch_reading_ease(sop_text)
-            metrics["readability"]["gunning_fog"] = textstat.gunning_fog(sop_text)
+            # Ensure text is not empty before calculating
+            if sop_text.strip():
+                flesch_score = textstat.flesch_reading_ease(sop_text)
+                gunning_score = textstat.gunning_fog(sop_text)
+            else:
+                flesch_score = "N/A (Empty Text)"
+                gunning_score = "N/A (Empty Text)"
         except Exception as e:
             print(f"Warning: textstat calculation failed: {e}")
+            # Keep scores as None
+            flesch_score = "N/A (Error)"
+            gunning_score = "N/A (Error)"
+    else:
+        # Explicitly mark as N/A if library missing
+        flesch_score = "N/A (textstat missing)"
+        gunning_score = "N/A (textstat missing)"
+
+    metrics["readability"]["flesch_reading_ease"] = flesch_score
+    metrics["readability"]["gunning_fog"] = gunning_score
 
     sentences = [] # Keep sentences list for reuse
     if NLTK_AVAILABLE:
         try:
-            sentences = nltk.sent_tokenize(sop_text)
+            # Ensure text is not empty before tokenizing
+            if sop_text.strip():
+                sentences = nltk.sent_tokenize(sop_text)
             total_sentences = len(sentences)
-            metrics["clarity_proxy"]["total_sentences"] = total_sentences
-            if sentences:
+            metrics["clarity_proxy"]["total_sentences"] = total_sentences # Store total sentences here
+            if sentences and total_sentences > 0: # Check total_sentences > 0
                  word_counts = [len(nltk.word_tokenize(s)) for s in sentences]
-                 avg_sent_len = sum(word_counts) / total_sentences if total_sentences > 0 else 0
-                 metrics["readability"]["avg_sentence_length"] = avg_sent_len
+                 avg_sent_len = sum(word_counts) / total_sentences
+            elif total_sentences == 0:
+                 avg_sent_len = 0 # Assign 0 if no sentences
         except LookupError:
              print("Warning: NLTK 'punkt' resource needed for sentence tokenization. Some metrics skipped.")
-             total_sentences = 0 # Reset if failed
+             avg_sent_len = "N/A (NLTK punkt missing)"
+             total_sentences = "N/A (NLTK punkt missing)" # Indicate dependency
+             metrics["clarity_proxy"]["total_sentences"] = total_sentences # Store N/A
         except Exception as e:
              print(f"Warning: NLTK sentence processing failed: {e}")
-             total_sentences = 0 # Reset if failed
+             avg_sent_len = "N/A (NLTK error)"
+             total_sentences = "N/A (NLTK error)" # Indicate dependency
+             metrics["clarity_proxy"]["total_sentences"] = total_sentences # Store N/A
+    else:
+        avg_sent_len = "N/A (NLTK missing)"
+        total_sentences = "N/A (NLTK missing)" # Indicate dependency
+        metrics["clarity_proxy"]["total_sentences"] = total_sentences # Store N/A
+
+    metrics["readability"]["avg_sentence_length"] = avg_sent_len
+
 
     # --- Passive Voice Check (Requires spaCy and NLTK sentences) ---
-    if SPACY_AVAILABLE and nlp_spacy and sentences:
+    passive_ratio = None # Initialize
+    passive_sentences = 0 # Initialize
+    if SPACY_AVAILABLE and nlp_spacy and isinstance(total_sentences, int) and total_sentences > 0: # Check dependencies and valid sentence count
         try:
             # Process sentences efficiently with nlp.pipe if many sentences, or just loop
-            for sent_text in sentences:
-                 if len(sent_text) > nlp_spacy.max_length: continue # Skip too long sentences for spaCy
-                 doc = nlp_spacy(sent_text)
-                 is_passive = False
-                 for token in doc:
-                     # Check for passive auxiliary or passive nominal subject
-                     if token.dep_ == "nsubjpass" or (token.dep_ == "auxpass"):
-                         is_passive = True
-                         break
-                 if is_passive:
-                     passive_sentences += 1
-            metrics["clarity_proxy"]["passive_voice_sentences"] = passive_sentences
-            if total_sentences > 0:
-                metrics["clarity_proxy"]["passive_voice_ratio"] = passive_sentences / total_sentences
+            # Ensure we only process if sentences list is valid
+            if sentences:
+                for sent_text in sentences:
+                     if len(sent_text) > nlp_spacy.max_length: continue # Skip too long sentences for spaCy
+                     doc = nlp_spacy(sent_text)
+                     is_passive = False
+                     for token in doc:
+                         # Check for passive auxiliary or passive nominal subject
+                         if token.dep_ == "nsubjpass" or (token.dep_ == "auxpass"):
+                             is_passive = True
+                             break
+                     if is_passive:
+                         passive_sentences += 1
+            metrics["clarity_proxy"]["passive_voice_sentences"] = passive_sentences # Store count
+            # Calculate ratio only if total_sentences is a valid number > 0
+            passive_ratio = passive_sentences / total_sentences
         except Exception as e:
             print(f"Warning: spaCy passive voice check failed: {e}")
-    elif sentences: # If spaCy not available but we have sentences
-         metrics["clarity_proxy"]["passive_voice_ratio"] = "N/A (spaCy unavailable)"
+            passive_ratio = "N/A (spaCy error)"
+            metrics["clarity_proxy"]["passive_voice_sentences"] = "N/A (spaCy error)" # Store error state
+    elif not SPACY_AVAILABLE or not nlp_spacy:
+         passive_ratio = "N/A (spaCy unavailable)"
+         metrics["clarity_proxy"]["passive_voice_sentences"] = "N/A (spaCy unavailable)" # Store N/A
+    elif not isinstance(total_sentences, int) or total_sentences == 0:
+         passive_ratio = "N/A (Sentence count error)"
+         metrics["clarity_proxy"]["passive_voice_sentences"] = 0 if total_sentences == 0 else "N/A (Sent count error)" # Store 0 or N/A
+
+    metrics["clarity_proxy"]["passive_voice_ratio"] = passive_ratio
 
 
     # --- Structure & Consistency ---
@@ -5921,8 +5969,10 @@ def calculate_automated_metrics(sop_text):
             if match:
                  level = len(match.group(1))
                  heading_text = match.group(2).strip()
-                 detected_headings.append(heading_text)
-                 heading_level_counts[level] = heading_level_counts.get(level, 0) + 1
+                 # Only add heading if it has text content
+                 if heading_text:
+                     detected_headings.append(heading_text)
+                     heading_level_counts[level] = heading_level_counts.get(level, 0) + 1
             # List item check (using refined pattern from detect_list_items)
             list_match = re.match(r"^\s*(?:(?:\d+\.)|(?:\*)|(?:\-)|(?:\([a-zA-Z0-9]+\)))\s+", line_strip)
             if list_match:
@@ -5970,22 +6020,31 @@ def calculate_automated_metrics(sop_text):
 
 
 def open_review_window(model_name, initial_sop_text):
-    """Creates and displays the SOP Review and Query window."""
-    global review_window, review_data_cache, root
+    """Creates and displays the SOP Review and Query window with a scrollable right pane."""
+    global review_window, review_data_cache, root, style # Add style if not global already
     parent_window = root if root and root.winfo_exists() else None
 
-    # Prevent multiple review windows (handled in trigger, but double-check)
     if review_window and review_window.winfo_exists():
         return
 
     review_window = tk.Toplevel(root)
     review_window.title(f"Review & Query SOP - Model: {model_name}")
-    review_window.geometry("1100x800")
-    review_window.minsize(800, 650)
+    # --- ADJUSTED SIZES ---
+    review_window.geometry("1200x850") # Increased default size
+    review_window.minsize(900, 700)    # Increased minimum size
     review_window.protocol("WM_DELETE_WINDOW", lambda: on_review_window_close(review_window))
     review_window.grab_set() # Make modal
 
-    # Initialize review data cache for this session
+    # --- Calculate Metrics BEFORE creating UI elements ---
+    print("Calculating initial automated metrics for review window...")
+    calculated_metrics = {}
+    try:
+        calculated_metrics = calculate_automated_metrics(initial_sop_text)
+    except Exception as e_metrics_calc:
+         print(f"ERROR calculating initial automated metrics: {e_metrics_calc}")
+         calculated_metrics = {"error": f"Calculation failed: {e_metrics_calc}"}
+
+    # --- Initialize review data cache ---
     review_data_cache = {
         "model_name": model_name,
         "original_sop": initial_sop_text,
@@ -5993,19 +6052,18 @@ def open_review_window(model_name, initial_sop_text):
         "review_scores": {"completeness": 3, "clarity": 3, "correctness": 3, "consistency": 3}, # Default scores
         "review_comments": "",
         "conversation_history": [], # List of {"role": "user/assistant", "content": "..."}
-        "automated_metrics": {}
+        "automated_metrics": calculated_metrics # STORE calculated metrics
     }
 
     # --- Main Paned Window (Resizable Panes) ---
     paned_window = ttk.PanedWindow(review_window, orient=tk.HORIZONTAL)
     paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-    # --- Left Pane (SOP Editor) ---
+    # --- Left Pane (SOP Editor - No Changes) ---
     editor_frame = ttk.Frame(paned_window, padding=5)
     editor_frame.columnconfigure(0, weight=1)
     editor_frame.rowconfigure(1, weight=1)
     paned_window.add(editor_frame, weight=2) # Give editor more initial space
-
     ttk.Label(editor_frame, text="Editable SOP Content:", style="Header.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 5))
     sop_editor_widget = scrolledtext.ScrolledText(editor_frame, wrap=tk.WORD, height=25, width=70, font=("Arial", 10), relief=tk.SOLID, borderwidth=1)
     sop_editor_widget.grid(row=1, column=0, sticky="nsew")
@@ -6014,164 +6072,217 @@ def open_review_window(model_name, initial_sop_text):
     editor_debounce_timer = None
     def on_sop_edit(*args):
         nonlocal editor_debounce_timer
-        if editor_debounce_timer:
-             sop_editor_widget.after_cancel(editor_debounce_timer)
+        if editor_debounce_timer: sop_editor_widget.after_cancel(editor_debounce_timer)
         editor_debounce_timer = sop_editor_widget.after(750, update_sop_cache)
     def update_sop_cache():
-        if sop_editor_widget and sop_editor_widget.winfo_exists():
-            review_data_cache['edited_sop'] = sop_editor_widget.get("1.0", tk.END).strip()
-            # print("SOP cache updated") # Debug
+        if sop_editor_widget and sop_editor_widget.winfo_exists(): review_data_cache['edited_sop'] = sop_editor_widget.get("1.0", tk.END).strip()
     sop_editor_widget.bind("<KeyRelease>", on_sop_edit)
 
 
-    # --- Right Pane (Review Metrics & Query) ---
-    right_pane_frame = ttk.Frame(paned_window, padding=5)
-    right_pane_frame.columnconfigure(0, weight=1)
-    right_pane_frame.rowconfigure(1, weight=1) # Query section expands
-    right_pane_frame.rowconfigure(2, weight=1) # Conversation expands
-    paned_window.add(right_pane_frame, weight=1)
+    # --- <<< START: Right Pane SCROLLABLE Setup >>> ---
+    right_scrollable_container = ttk.Frame(paned_window, padding=0)
+    right_scrollable_container.columnconfigure(0, weight=1)
+    right_scrollable_container.rowconfigure(0, weight=1)
+    paned_window.add(right_scrollable_container, weight=1)
+    canvas = tk.Canvas(right_scrollable_container, borderwidth=0, highlightthickness=0)
+    try: canvas_bg = style.lookup('TFrame', 'background')
+    except: canvas_bg = 'SystemButtonFace'
+    canvas.configure(background=canvas_bg)
+    scrollbar = ttk.Scrollbar(right_scrollable_container, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    scrollbar.grid(row=0, column=1, sticky='ns')
+    canvas.grid(row=0, column=0, sticky='nsew')
+    right_content_frame = ttk.Frame(canvas, padding=5)
+    right_content_frame.columnconfigure(0, weight=1)
+    frame_id = canvas.create_window((0, 0), window=right_content_frame, anchor="nw")
+    def on_frame_configure(event, canvas=canvas): canvas.configure(scrollregion=canvas.bbox("all"))
+    def on_canvas_configure(event, canvas=canvas, frame_id=frame_id): canvas.itemconfig(frame_id, width=event.width)
+    right_content_frame.bind("<Configure>", on_frame_configure)
+    canvas.bind("<Configure>", on_canvas_configure)
+    def _on_mousewheel(event, canvas=canvas):
+        if platform.system() == "Windows": delta = -1 * int(event.delta / 120)
+        elif platform.system() == "Darwin": delta = event.delta
+        else: return
+        canvas.yview_scroll(delta, "units")
+    def _on_mousewheel_linux_up(event, canvas=canvas): canvas.yview_scroll(-1, "units")
+    def _on_mousewheel_linux_down(event, canvas=canvas): canvas.yview_scroll(1, "units")
+    canvas.bind_all("<MouseWheel>", _on_mousewheel) # Use bind_all cautiously
+    canvas.bind_all("<Button-4>", _on_mousewheel_linux_up)
+    canvas.bind_all("<Button-5>", _on_mousewheel_linux_down)
+    # --- <<< END: Right Pane SCROLLABLE Setup >>> ---
 
 
-    # -- Review Metrics Frame --
-    metrics_frame = ttk.LabelFrame(right_pane_frame, text="Review Metrics (1=Poor, 5=Excellent)", padding=10)
+    # --- Populate the INNER content frame (right_content_frame) ---
+
+    # -- User Review Metrics Frame --
+    metrics_frame = ttk.LabelFrame(right_content_frame, text="User Review Metrics (1=Poor, 5=Excellent)", padding=10)
     metrics_frame.grid(row=0, column=0, sticky="new", pady=(0, 10))
     metrics_frame.columnconfigure(1, weight=1)
-
-    # Scales for ratings
-    scales = {}
-    score_vars = {}
+    # Scales and Comments widgets
+    scales = {}; score_vars = {}
     metrics_to_rate = ["Completeness", "Clarity", "Correctness", "Consistency"]
     for idx, metric_name in enumerate(metrics_to_rate):
         ttk.Label(metrics_frame, text=f"{metric_name}:").grid(row=idx, column=0, sticky="w", padx=5, pady=2)
         score_var = tk.IntVar(value=review_data_cache["review_scores"].get(metric_name.lower(), 3))
         scale = ttk.Scale(metrics_frame, from_=1, to=5, orient=tk.HORIZONTAL, variable=score_var, length=150, command=lambda v, m=metric_name.lower(): update_review_score(m, v))
         scale.grid(row=idx, column=1, sticky="ew", padx=5, pady=2)
-        # Display current value next to scale
-        value_label = ttk.Label(metrics_frame, textvariable=score_var, width=2)
-        value_label.grid(row=idx, column=2, padx=(5,0))
-        scales[metric_name.lower()] = scale
-        score_vars[metric_name.lower()] = score_var
-
-    # Review Comments
+        value_label = ttk.Label(metrics_frame, textvariable=score_var, width=2); value_label.grid(row=idx, column=2, padx=(5,0))
+        scales[metric_name.lower()] = scale; score_vars[metric_name.lower()] = score_var
     ttk.Label(metrics_frame, text="Comments:").grid(row=len(metrics_to_rate), column=0, columnspan=3, sticky="w", padx=5, pady=(8, 2))
     comments_widget = scrolledtext.ScrolledText(metrics_frame, wrap=tk.WORD, height=4, width=40, font=("Arial", 9), relief=tk.SOLID, borderwidth=1)
     comments_widget.grid(row=len(metrics_to_rate)+1, column=0, columnspan=3, sticky="nsew", padx=5, pady=(0, 5))
-    # Track comment edits
     comments_debounce_timer = None
-    def on_comments_edit(*args):
-        nonlocal comments_debounce_timer
-        if comments_debounce_timer:
-             comments_widget.after_cancel(comments_debounce_timer)
-        comments_debounce_timer = comments_widget.after(750, update_comments_cache)
-    def update_comments_cache():
-        if comments_widget and comments_widget.winfo_exists():
-             review_data_cache['review_comments'] = comments_widget.get("1.0", tk.END).strip()
-             # print("Comments cache updated") # Debug
+    def on_comments_edit(*args): nonlocal comments_debounce_timer; # ... (rest of debounce)
+    def update_comments_cache(): # ... (rest of update)
+        if comments_widget and comments_widget.winfo_exists(): review_data_cache['review_comments'] = comments_widget.get("1.0", tk.END).strip()
     comments_widget.bind("<KeyRelease>", on_comments_edit)
 
 
+    # --- Automated Metrics Frame ---
+    auto_metrics_frame = ttk.LabelFrame(right_content_frame, text="Automated Metrics (Experimental)", padding=10)
+    auto_metrics_frame.grid(row=1, column=0, sticky="new", pady=(0, 10))
+    auto_metrics_frame.columnconfigure(1, weight=1)
+    auto_metrics_frame.columnconfigure(2, weight=1)
+
+    # <<< --- DEFINE fmt_metric HELPER FUNCTION LOCALLY --- >>>
+    def fmt_metric(value, precision=1, suffix="", na_text="N/A"):
+        """Formats metric values, handling N/A strings and potential errors."""
+        if isinstance(value, str) and value.startswith("N/A"):
+            return value # Return N/A string directly (e.g., "N/A (library missing)")
+        try:
+            if value is None: return na_text
+            return f"{float(value):.{precision}f}{suffix}"
+        except (ValueError, TypeError):
+            return na_text # Handle errors if value isn't convertible to float
+    # <<< --- END HELPER FUNCTION DEFINITION --- >>>
+
+    # Style for reference text
+    ref_style = "Italic.TLabel"; ref_fg = "gray"
+    row_idx_auto = 0
+    metrics_data = review_data_cache.get("automated_metrics", {})
+
+    if metrics_data.get("error"):
+        ttk.Label(auto_metrics_frame, text=f"Error calculating metrics: {metrics_data['error']}", foreground="red").grid(row=row_idx_auto, column=0, columnspan=3, sticky="w", padx=5, pady=5); row_idx_auto+=1
+    else:
+        # Readability
+        ttk.Label(auto_metrics_frame, text="Readability:", style="Header.TLabel").grid(row=row_idx_auto, column=0, columnspan=3, sticky="w", padx=5, pady=(0,2)); row_idx_auto+=1
+        read_data = metrics_data.get("readability", {})
+        ttk.Label(auto_metrics_frame, text="  Flesch Ease:").grid(row=row_idx_auto, column=0, sticky="w", padx=5)
+        ttk.Label(auto_metrics_frame, text=f"{fmt_metric(read_data.get('flesch_reading_ease'), 1)}").grid(row=row_idx_auto, column=1, sticky="w", padx=5)
+        ttk.Label(auto_metrics_frame, text=FLESCH_EASE_REF, style=ref_style, foreground=ref_fg, wraplength=250).grid(row=row_idx_auto, column=2, sticky="w", padx=5); row_idx_auto+=1
+        ttk.Label(auto_metrics_frame, text="  Gunning Fog:").grid(row=row_idx_auto, column=0, sticky="w", padx=5)
+        ttk.Label(auto_metrics_frame, text=f"{fmt_metric(read_data.get('gunning_fog'), 1)}").grid(row=row_idx_auto, column=1, sticky="w", padx=5)
+        ttk.Label(auto_metrics_frame, text=GUNNING_FOG_REF, style=ref_style, foreground=ref_fg, wraplength=250).grid(row=row_idx_auto, column=2, sticky="w", padx=5); row_idx_auto+=1
+        ttk.Label(auto_metrics_frame, text="  Avg Sent Len:").grid(row=row_idx_auto, column=0, sticky="w", padx=5)
+        ttk.Label(auto_metrics_frame, text=f"{fmt_metric(read_data.get('avg_sentence_length'), 1, ' words')}").grid(row=row_idx_auto, column=1, sticky="w", padx=5)
+        ttk.Label(auto_metrics_frame, text=AVG_SENT_LEN_REF, style=ref_style, foreground=ref_fg, wraplength=250).grid(row=row_idx_auto, column=2, sticky="w", padx=5); row_idx_auto+=1
+
+        # Clarity
+        ttk.Label(auto_metrics_frame, text="Clarity:", style="Header.TLabel").grid(row=row_idx_auto, column=0, columnspan=3, sticky="w", padx=5, pady=(8,2)); row_idx_auto+=1
+        clarity_data = metrics_data.get("clarity_proxy", {})
+        passive_ratio = clarity_data.get('passive_voice_ratio')
+        ttk.Label(auto_metrics_frame, text="  Passive Voice:").grid(row=row_idx_auto, column=0, sticky="nw", padx=5)
+        passive_frame = ttk.Frame(auto_metrics_frame); passive_frame.grid(row=row_idx_auto, column=1, columnspan=2, sticky="ew", padx=5); passive_frame.columnconfigure(0, weight=1)
+        passive_bar = ttk.Progressbar(passive_frame, orient='horizontal', length=80, mode='determinate', maximum=100); passive_bar.grid(row=0, column=0, sticky="ew")
+        passive_text = "N/A"
+        if isinstance(passive_ratio, float):
+            passive_bar['value'] = passive_ratio * 100; passive_text = f"{passive_ratio:.1%}"
+            sent_count = clarity_data.get("total_sentences", "N/A"); passive_count = clarity_data.get("passive_voice_sentences", "N/A")
+            if not isinstance(sent_count, str) and not isinstance(passive_count, str): passive_text += f" ({passive_count}/{sent_count} sent)"
+        elif isinstance(passive_ratio, str): passive_text = passive_ratio
+        ttk.Label(passive_frame, text=passive_text, anchor="w").grid(row=0, column=1, sticky="w", padx=(5, 0))
+        ttk.Label(auto_metrics_frame, text=PASSIVE_VOICE_REF, style=ref_style, foreground=ref_fg).grid(row=row_idx_auto+1, column=1, columnspan=2, sticky="w", padx=(10,5)); row_idx_auto+=2
+
+        # Completeness
+        ttk.Label(auto_metrics_frame, text="Completeness:", style="Header.TLabel").grid(row=row_idx_auto, column=0, columnspan=3, sticky="w", padx=5, pady=(8,2)); row_idx_auto+=1
+        comp_data = metrics_data.get("completeness_proxy", {})
+        ttk.Label(auto_metrics_frame, text="  Std Sections Found:").grid(row=row_idx_auto, column=0, sticky="nw", padx=5)
+        ttk.Label(auto_metrics_frame, text="{}".format(', '.join(comp_data.get('standard_sections_found', ['N/A'])) or "None"), wraplength=350).grid(row=row_idx_auto, column=1, columnspan=2, sticky="w", padx=5); row_idx_auto+=1
+        ttk.Label(auto_metrics_frame, text="  Std Sections Missing:").grid(row=row_idx_auto, column=0, sticky="nw", padx=5)
+        ttk.Label(auto_metrics_frame, text="{}".format(', '.join(comp_data.get('standard_sections_missing', ['N/A'])) or "None"), wraplength=350).grid(row=row_idx_auto, column=1, columnspan=2, sticky="w", padx=5); row_idx_auto+=1
+
+        # Structure & Consistency
+        ttk.Label(auto_metrics_frame, text="Structure/Consistency:", style="Header.TLabel").grid(row=row_idx_auto, column=0, columnspan=3, sticky="w", padx=5, pady=(8,2)); row_idx_auto+=1
+        struct_data = metrics_data.get("structure", {}); cons_data = metrics_data.get("consistency_proxy", {})
+        ttk.Label(auto_metrics_frame, text="  Headings Detected:").grid(row=row_idx_auto, column=0, sticky="w", padx=5); ttk.Label(auto_metrics_frame, text=f"{len(struct_data.get('section_headings',[]))}").grid(row=row_idx_auto, column=1, columnspan=2, sticky="w", padx=5); row_idx_auto+=1
+        heading_usage = cons_data.get('heading_level_usage', {}); heading_usage_str = ', '.join([f"L{lvl}: {cnt}" for lvl, cnt in sorted(heading_usage.items())]) or "N/A"
+        ttk.Label(auto_metrics_frame, text="  Heading Levels (#):").grid(row=row_idx_auto, column=0, sticky="w", padx=5); ttk.Label(auto_metrics_frame, text=heading_usage_str).grid(row=row_idx_auto, column=1, columnspan=2, sticky="w", padx=5); row_idx_auto+=1
+        ttk.Label(auto_metrics_frame, text="  List Items Count:").grid(row=row_idx_auto, column=0, sticky="w", padx=5); ttk.Label(auto_metrics_frame, text=f"{struct_data.get('list_item_count', 'N/A')}").grid(row=row_idx_auto, column=1, columnspan=2, sticky="w", padx=5); row_idx_auto+=1
+        ttk.Label(auto_metrics_frame, text="  List Type Usage:").grid(row=row_idx_auto, column=0, sticky="w", padx=5); ttk.Label(auto_metrics_frame, text=cons_data.get('list_type_usage', 'N/A')).grid(row=row_idx_auto, column=1, columnspan=2, sticky="w", padx=5); row_idx_auto+=1
+
+        # Dependency Notes
+        dep_notes = [];
+        if not TEXTSTAT_AVAILABLE: dep_notes.append("textstat")
+        if not NLTK_AVAILABLE: dep_notes.append("nltk")
+        if not SPACY_AVAILABLE or not nlp_spacy: dep_notes.append("spaCy+model")
+        if dep_notes:
+             ttk.Label(auto_metrics_frame, text=f"(Metrics limited by missing: {', '.join(dep_notes)})", style="Italic.TLabel", foreground="gray").grid(row=row_idx_auto, column=0, columnspan=3, sticky="w", padx=5, pady=(5,0)); row_idx_auto+=1
+
+
     # -- Follow-up Query Frame --
-    query_frame = ttk.LabelFrame(right_pane_frame, text="Follow-up Query", padding=10)
-    query_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+    query_frame = ttk.LabelFrame(right_content_frame, text="Follow-up Query", padding=10)
+    query_frame.grid(row=2, column=0, sticky="new", pady=(0, 10))
     query_frame.columnconfigure(0, weight=1)
     query_frame.rowconfigure(1, weight=1) # Conversation area expands
-
-     # <<<--- NEW: Define placeholder and style --- >>>
+    # Query Input, Placeholder logic, Conversation Display, Button
     placeholder_text = f"Ask {model_name} to clarify, expand, or revise parts of the SOP..."
-    placeholder_color = "grey" # Or choose a theme-appropriate color
-
-    # Configure tag for placeholder style in the conversation widget's context
+    placeholder_color = "grey"
     try:
-        # Use a temporary text widget tied to the *review window* to configure
-        temp_q_text = tk.Text(review_window)
-        temp_q_text.tag_configure("placeholder", foreground=placeholder_color, font=("Arial", 10, "italic"))
-        temp_q_text.destroy()
-    except Exception as e_tag:
-        print(f"Warning: Could not configure placeholder tag: {e_tag}")
-    # <<<--- END NEW --- >>>
-
-    # Query Input
+        temp_q_text = tk.Text(review_window); temp_q_text.tag_configure("placeholder", foreground=placeholder_color, font=("Arial", 10, "italic")); temp_q_text.destroy()
+    except Exception as e_tag: print(f"Warning: Could not configure placeholder tag: {e_tag}")
     query_input_widget = scrolledtext.ScrolledText(query_frame, wrap=tk.WORD, height=3, width=40, font=("Arial", 10), relief=tk.SOLID, borderwidth=1)
     query_input_widget.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
-    query_input_widget.insert("1.0", f"Ask a question about the SOP generated by {model_name}...") # Placeholder
-    query_input_widget.bind("<FocusIn>", lambda e: query_input_widget.delete("1.0", tk.END) if "Ask a question" in query_input_widget.get("1.0", tk.END) else None)
-
-
-      # <<<--- NEW: Focus Handling Functions --- >>>
-    def on_query_focus_in(event):
-        widget = event.widget
-        current_text = widget.get("1.0", "end-1c").strip() # Get text without trailing newline
-        # Check if the text IS the placeholder
-        if current_text == placeholder_text:
-            # Check if the placeholder tag is applied (more robust check)
-            tags = widget.tag_names("1.0")
-            if "placeholder" in tags:
-                 widget.delete("1.0", tk.END)
-                 widget.tag_remove("placeholder", "1.0", tk.END) # Remove tag
-                 # Optionally reset foreground color explicitly if tag didn't override theme
-                 # widget.config(foreground=style.lookup('TEntry', 'foreground'))
-
-    def on_query_focus_out(event):
-        widget = event.widget
-        current_text = widget.get("1.0", "end-1c").strip()
-        if not current_text: # If box is empty when focus is lost
-            widget.insert("1.0", placeholder_text, ("placeholder",))
-            # Optionally set foreground explicitly if needed
-            # widget.config(foreground=placeholder_color)
-
+    query_input_widget.insert("1.0", placeholder_text, ("placeholder",))
+    def on_query_focus_in(event): # Focus logic remains the same
+        widget = event.widget; current_text = widget.get("1.0", "end-1c").strip()
+        if current_text == placeholder_text and "placeholder" in widget.tag_names("1.0"): widget.delete("1.0", tk.END); widget.tag_remove("placeholder", "1.0", tk.END)
+    def on_query_focus_out(event): # Focus logic remains the same
+        widget = event.widget; current_text = widget.get("1.0", "end-1c").strip()
+        if not current_text: widget.insert("1.0", placeholder_text, ("placeholder",))
     query_input_widget.bind("<FocusIn>", on_query_focus_in)
     query_input_widget.bind("<FocusOut>", on_query_focus_out)
-    # <<<--- END NEW --- >>>
-
-    # Conversation Display
     conversation_widget = scrolledtext.ScrolledText(query_frame, wrap=tk.WORD, height=8, width=40, font=("Arial", 9), relief=tk.SOLID, borderwidth=1, state=tk.DISABLED)
-    conversation_widget.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
-    # Add tags for conversation styling
-    try:
-        conversation_widget.tag_configure("user_query", foreground="blue", font=("Arial", 9, "bold"))
-        conversation_widget.tag_configure("model_response", foreground="black") # Adjust if theme differs
-        conversation_widget.tag_configure("error_message", foreground="red", font=("Arial", 9, "italic"))
+    conversation_widget.grid(row=1, column=0, sticky="nsew", padx=5, pady=5) # Expand NSEW
+    try: # Tag config remains the same
+        conversation_widget.tag_configure("user_query", foreground="blue", font=("Arial", 9, "bold")); conversation_widget.tag_configure("model_response", foreground="black"); conversation_widget.tag_configure("error_message", foreground="red", font=("Arial", 9, "italic"))
     except tk.TclError: pass
-
-    # Send Query Button
     send_query_button = ttk.Button(query_frame, text="Send Query", style="Accent.TButton")
     send_query_button.grid(row=2, column=0, sticky="e", padx=5, pady=5)
-    # Assign command later, needs references
 
 
     # --- Action Buttons Frame ---
-    action_frame_bottom = ttk.Frame(right_pane_frame)
+    action_frame_bottom = ttk.Frame(right_content_frame) # Parent is right_content_frame
     action_frame_bottom.grid(row=3, column=0, sticky="sew", pady=(10, 0))
-    action_frame_bottom.columnconfigure(0, weight=1) # Allow spacer to expand
-
+    action_frame_bottom.columnconfigure(0, weight=1)
+    # Save and Close buttons
     save_review_button = ttk.Button(action_frame_bottom, text="💾 Save Reviewed SOP & Metrics", command=lambda: save_review_data(review_window))
     save_review_button.pack(side=tk.RIGHT, padx=5)
-
     close_button = ttk.Button(action_frame_bottom, text="Close", command=lambda: on_review_window_close(review_window))
     close_button.pack(side=tk.RIGHT, padx=5)
 
-    # --- Status Bar for Review Window ---
-    status_var_review = tk.StringVar(value=f"Status: Reviewing SOP from {model_name}. Edit content, rate metrics, or ask follow-up questions.")
+
+    # --- Status Bar --- (Parent remains review_window)
+    status_var_review = tk.StringVar(value=f"Status: Reviewing SOP from {model_name}. Edit, rate, query, or view automated metrics.")
     review_window.status_bar_label = ttk.Label(review_window, textvariable=status_var_review, relief=tk.SUNKEN, anchor=tk.W, padding=5)
     review_window.status_bar_label.pack(side=tk.BOTTOM, fill=tk.X, padx=0, pady=0)
 
-
-    # --- Assign Commands Requiring Widget References ---
+    # --- Assign Commands ---
     send_query_button.config(command=lambda: run_follow_up_query(
         model_name, query_input_widget, conversation_widget, send_query_button, status_var_review, review_window
     ))
 
-    # Make widgets accessible if needed by other functions via window reference (optional)
-    review_window.sop_editor = sop_editor_widget
-    review_window.comments_widget = comments_widget
-    review_window.conversation_widget = conversation_widget
-    review_window.query_input_widget = query_input_widget
-    review_window.status_var = status_var_review
-    review_window.score_vars = score_vars # Store score vars for saving
+    # --- Make widgets accessible ---
+    review_window.sop_editor = sop_editor_widget; review_window.comments_widget = comments_widget
+    review_window.conversation_widget = conversation_widget; review_window.query_input_widget = query_input_widget
+    review_window.status_var = status_var_review; review_window.score_vars = score_vars
 
-    # Focus management
+    # --- Final setup ---
     sop_editor_widget.focus_set()
-    update_menu_states() # Disable review button in main menu
+    update_menu_states()
+
+    # --- Crucial final step for scrollable frame: Trigger configure ---
+    review_window.update_idletasks() # Process geometry changes
+    canvas.configure(scrollregion=canvas.bbox("all")) # Set initial scroll region
 
 # Add 'escape' import if not already done near the top or before this function
 from html import escape
