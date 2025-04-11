@@ -353,28 +353,50 @@ You are generating a Standard Operating Procedure (SOP). The target audience for
 **Internal Chain-of-Thought Process (Follow these steps mentally before generating the output. DO NOT include this reasoning in your response):**
 1.  **Deconstruct Request:** Understand the core SOP topic provided by the user.
 2.  **Analyze Audience:** Consider the specified target audience ('{TARGET_AUDIENCE}') and how their knowledge level impacts clarity, terminology, and detail needed.
-3.  **Incorporate Context:** Integrate any specific requirements or details from the user's additional context section.
-4.  **Review Examples (If Provided):** Analyze the structure, tone, and style of any provided examples to guide the generation. Identify patterns or specific formatting to emulate.
-5.  **Plan Structure:** Outline the standard and necessary sections for this type of SOP (e.g., Purpose, Scope, Responsibilities, Procedure, Safety Precautions, References, Definitions). Use standard SOP section headings where appropriate.
-6.  **Draft Content Outline:** Briefly map the key points, steps, or information that should go into each planned section based on the topic, audience, context, and examples.
-7.  **Refine Language Plan:** Ensure the planned language aligns with the audience and maintains a formal, clear, and concise tone. Avoid jargon where possible or plan to define it.
+3.  **Identify Applicable Standards:** Based on the SOP topic (e.g., handling data, physical process, quality control), determine which standards (Safety, GDPR, ISO, etc.) are likely relevant.
+4.  **Incorporate Context:** Integrate any specific requirements or details from the user's additional context section.
+5.  **Review Examples (If Provided):** Analyze the structure, tone, and style of any provided examples to guide the generation. Identify patterns or specific formatting to emulate.
+6.  **Plan Structure:** Outline the standard and necessary sections for this type of SOP (e.g., Purpose, Scope, Responsibilities, Procedure, Safety Precautions, Data Handling, Documentation, References, Definitions). Ensure the structure facilitates compliance (e.g., dedicated safety section).
+7.  **Draft Content Outline (Compliance Focus):** Briefly map the key points, steps, or information for each section. *Critically evaluate* how to embed relevant standard principles (safety steps, data privacy measures, quality checks) directly into the procedural steps and responsibility assignments.
+8.  **Refine Language Plan:** Ensure the planned language aligns with the audience, maintains a formal, clear, and concise tone, and uses terminology appropriate for compliance where necessary.
 
-**SOP Generation Guidelines (Apply AFTER completing the internal thought process):**
-When generating the SOP, please follow these guidelines:
-1. Use a formal tone and clear, concise language appropriate for the specified audience.
-2. Ensure the SOP is easy to follow, with step-by-step instructions where applicable.
-3. Include necessary details, such as required resources, safety precautions, and potential risks implied by the topic and context.
+**Mandatory Compliance Considerations (Integrate these principles where relevant based on the SOP topic):**
+*   **Safety:**
+    *   Proactively identify potential hazards and risks associated with the procedure.
+    *   Include clear, actionable safety precautions and warnings within the procedure steps or in a dedicated "Safety Precautions" section.
+    *   Specify required Personal Protective Equipment (PPE) if applicable.
+    *   Mention emergency contact information or procedures if relevant to the risk profile.
+*   **Data Protection (e.g., GDPR - Apply IF the SOP involves processing personal data):**
+    *   Emphasize data minimization (only collect/process necessary data).
+    *   Specify security measures for handling, storing, and transmitting personal data.
+    *   Clarify data access controls and responsibilities.
+    *   Mention data retention periods and deletion procedures if applicable.
+    *   If relevant, note requirements for consent or providing privacy information.
+*   **Quality Management (e.g., ISO - Apply IF the SOP relates to a quality-controlled process):**
+    *   Clearly define responsibilities for each step.
+    *   Ensure steps are logical, sequential, and unambiguous to promote consistency.
+    *   Specify any required checks, measurements, or quality control points within the procedure.
+    *   Reference relevant documentation, forms, or records required by the quality system.
+    *   Structure the SOP to facilitate document control (though you cannot perform versioning/approval yourself). Include placeholders for version number, approval dates, etc., if appropriate for the format.
+*   **General:** Do not just state 'Comply with standards'. *Show* compliance by integrating the principles into the SOP content (procedure steps, responsibilities, resources, warnings). Use standard SOP section headings where applicable (e.g., 'Safety Precautions', 'Data Handling Procedures').
+
+**SOP Generation Guidelines (Apply AFTER completing the internal thought process and considering compliance):**
+1. Use a formal tone and clear, concise language appropriate for the specified audience and any applicable standards.
+2. Ensure the SOP is easy to follow, with step-by-step instructions where applicable, incorporating necessary safety/compliance actions directly.
+3. Include necessary details, such as required resources, safety precautions (if not fully integrated into steps), potential risks, data handling rules, and quality checks implied by the topic, context, and identified standards.
 4. Break the SOP into the logical sections planned during the internal thought process. Use standard SOP section headings.
 5. Use markdown formatting, including headings (##, ###), bullet points (* or -), and numbered lists (1., 2.), to organize the content effectively.
 6. Avoid jargon where possible, or define it if necessary, considering the target audience.
 7. Ensure consistency in formatting and presentation throughout the document.
 8. **Start the output directly with the SOP content (e.g., the first heading like '## Purpose'). Do not include your internal reasoning steps, planning notes, introductory phrases like "Here is the SOP...", or concluding remarks not part of the SOP itself.**
 9. Do not include placeholder text like '[Insert details here]' unless specifically requested in the context.
-10. Do not invent steps or safety precautions not logically implied by the topic and context provided. Aim for accuracy and relevance.
+10. Do not invent steps or precautions not logically implied by the topic, context, or relevant standards. Aim for accuracy and relevance.
 """
 
 # Default role description to fill the placeholder
-DEFAULT_ROLE_DESCRIPTION = "You are a highly experienced and professional AI assistant specializing in creating clear, structured, and precise Standard Operating Procedures (SOPs), capable of adapting to different compliance standards like ISO 9001."
+DEFAULT_ROLE_DESCRIPTION = """You are a highly experienced and professional AI assistant specializing in creating clear, structured, and precise Standard Operating Procedures (SOPs).
+**Crucially, you are an expert in applying relevant industry standards, including general safety best practices, data protection regulations (like GDPR where applicable), and quality management principles (like those found in ISO 9001 or other relevant ISO standards).**
+Your goal is to generate SOPs that are not only functional but also align with these critical compliance requirements based on the SOP topic provided."""
 
 
 # --- Constants ---
@@ -1971,8 +1993,10 @@ Version: {APP_VERSION}
 *³ AI Analysis requires OpenAI key...
 *⁴ Structural Analysis requires `spacy`, `nltk`...
 * **PDF Generation requires `markdown2` and `xhtml2pdf`.**
+**Disclaimer:** The AI aims to generate SOPs aligned with common standards based on its training and the provided prompts. However, **this tool does not provide legal or compliance advice.** Generated SOPs are drafts and **must be reviewed by qualified personnel** (e.g., safety officers, legal counsel, quality managers) to ensure full compliance with all applicable laws, regulations, and specific organizational requirements before implementation.
 
 Check the 'Help' > 'Check API Keys & Libs Status' menu for current status."""
+
 
     messagebox.showinfo("About AI SOP Generator & Comparator", message, parent=parent_window)
 
@@ -5690,136 +5714,194 @@ def run_follow_up_query(model_name, query_widget, convo_widget, button_widget, s
     ).start()
 
 def run_follow_up_query_thread(model_name, convo_widget, button_widget, status_var, window_ref):
-    """Worker thread to call AI API for follow-up queries."""
+    """
+    Worker thread to call AI API for follow-up queries.
+    Attempts to update the SOP editor if the AI response seems like a full revision.
+    """
     global review_data_cache
     model_response_text = ""
     error_message = None
     api_provider = AVAILABLE_MODELS.get(model_name, {}).get("provider")
+    is_modification_response = False # Flag to track response type
 
     try:
         # --- Prepare Context for API ---
-        original_sop = review_data_cache.get("original_sop", "SOP context is missing.")
-        history = review_data_cache.get("conversation_history", []) # Should be [{'role': 'user'/'assistant', 'content':...}]
+        # *** GET CURRENT EDITED SOP from cache ***
+        current_edited_sop = review_data_cache.get("edited_sop", review_data_cache.get("original_sop", "SOP context is missing."))
+        history = review_data_cache.get("conversation_history", [])
 
-        system_prompt = f"""You are assisting a user reviewing a Standard Operating Procedure (SOP) that you ({model_name}) previously generated.
-The original SOP content is provided below. Answer the user's follow-up questions or instructions based on this SOP context and the previous conversation turns.
-Keep your answers concise and relevant to the SOP.
+        # *** REVISED Follow-up SYSTEM PROMPT ***
+        system_prompt = f"""You are assisting a user reviewing and editing a Standard Operating Procedure (SOP) previously generated by you ({model_name}).
+The **current version of the SOP** (which may include user edits) is provided below. The user might ask questions or give instructions to modify the SOP.
+**Crucially, you must ensure that any modifications maintain or enhance adherence to relevant standards (Safety, GDPR, ISO, etc.) as outlined in your original instructions.**
 
---- ORIGINAL SOP START ---
-{original_sop}
---- ORIGINAL SOP END ---
+*   **If the user asks a question:** Answer it concisely based on the provided SOP context and conversation history.
+*   **If the user provides an instruction to modify the SOP** (e.g., 'Add a section about X', 'Rewrite step 3 for clarity', 'Merge sections Y and Z'): Your primary goal is to **regenerate and output the *entire* SOP document, incorporating the requested changes WHILE rigorously applying relevant safety, data protection, and quality management principles.** Maintain the original style, tone, and formatting. Output *only* the complete, revised SOP text, starting directly with the first heading (e.g., '## Purpose'). Do not include conversational text or preambles.
+
+--- CURRENT SOP START ---
+{current_edited_sop}
+--- CURRENT SOP END ---
+
 """
         # Construct messages list based on provider requirements
         messages = []
         if api_provider == "Google Gemini":
-             # Gemini expects specific format: {'role': 'user'/'model', 'parts': [{'text': ...}]}
-             gemini_messages = []
-             for turn in history:
-                 role = turn.get("role")
-                 content = turn.get("content", "")
-                 # Map 'assistant' role from our cache to 'model' for Gemini API
-                 api_role = "model" if role == "assistant" else "user"
-                 # Ensure content is not empty before adding part
-                 if content:
-                     gemini_messages.append({'role': api_role, 'parts': [{'text': content}]})
-                 else:
-                      print(f"Warning: Skipping empty content turn for role '{role}' in Gemini history.")
-             # We will pass system_prompt separately via system_instruction
+            # Gemini expects specific format: {'role': 'user'/'model', 'parts': [{'text': ...}]}
+            gemini_messages = []
+            for turn in history:
+                role = turn.get("role")
+                content = turn.get("content", "")
+                api_role = "model" if role == "assistant" else "user"
+                if content: gemini_messages.append({'role': api_role, 'parts': [{'text': content}]})
+                else: print(f"Warning: Skipping empty content turn for role '{role}' in Gemini history.")
+            # System prompt passed separately via system_instruction
         else:
-            # OpenAI / Anthropic format (Anthropic system handled in stream call)
-            if api_provider != "Anthropic Claude":
+            # OpenAI / Anthropic format
+            if api_provider != "Anthropic Claude": # Anthropic system handled in stream call
                 messages.append({"role": "system", "content": system_prompt})
-            # Add conversation history (keeping original roles)
-            messages.extend(history)
+            # Add conversation history (ensure no duplicate system messages)
+            messages.extend([m for m in history if m.get("role") != "system"])
 
+        # --- API Call (Streaming) ---
+        full_response_buffer = "" # Buffer to collect the entire response
 
-        # --- API Call ---
         if api_provider == "OpenAI":
             if not openai_client: raise ValueError("OpenAI client not available.")
             stream = openai_client.chat.completions.create(
-                model=model_name, messages=messages, stream=True, max_tokens=1024, temperature=0.5
+                model=model_name, messages=messages, stream=True, max_tokens=4096, temperature=0.5 # Increased max_tokens for full SOP
             )
-            # ... (rest of OpenAI streaming logic - no changes needed here) ...
             for chunk in stream:
-                 content = chunk.choices[0].delta.content
-                 if content:
-                      model_response_text += content
-                      if window_ref and window_ref.winfo_exists():
-                          window_ref.after(0, lambda txt=content: _update_review_conversation_gui(convo_widget, txt, "model_response", append=True))
-
+                content = chunk.choices[0].delta.content
+                if content:
+                    full_response_buffer += content
+                    # No immediate GUI update here - process after full response
 
         elif api_provider == "Google Gemini":
             if not google_api_configured: raise ValueError("Google Gemini API not configured.")
-            # Pass system prompt separately
             model = genai.GenerativeModel(model_name, system_instruction=system_prompt)
-            # Use the correctly formatted gemini_messages list
-            # <<< FIX: Pass the correctly formatted list >>>
-            response = model.generate_content(gemini_messages, stream=True, generation_config=genai.types.GenerationConfig(temperature=0.5))
-            # ... (rest of Gemini streaming logic - no changes needed here) ...
+            response = model.generate_content(gemini_messages, stream=True, generation_config=genai.types.GenerationConfig(temperature=0.5, max_output_tokens=8192)) # Adjust max_tokens
             for chunk in response:
-                 chunk_text = ""
-                 try:
-                     if hasattr(chunk, 'parts') and chunk.parts: chunk_text = "".join(part.text for part in chunk.parts if hasattr(part, 'text'))
-                     elif hasattr(chunk, 'text'): chunk_text = chunk.text
-                 except Exception: pass
-                 if chunk_text:
-                     model_response_text += chunk_text
-                     if window_ref and window_ref.winfo_exists():
-                         window_ref.after(0, lambda txt=chunk_text: _update_review_conversation_gui(convo_widget, txt, "model_response", append=True))
-
+                chunk_text = ""
+                try:
+                    if hasattr(chunk, 'parts') and chunk.parts: chunk_text = "".join(part.text for part in chunk.parts if hasattr(part, 'text'))
+                    elif hasattr(chunk, 'text'): chunk_text = chunk.text
+                except Exception: pass
+                if chunk_text:
+                    full_response_buffer += chunk_text
+                    # No immediate GUI update here
 
         elif api_provider == "Anthropic Claude":
             if not anthropic_client: raise ValueError("Anthropic client not available.")
-            # Anthropic takes system prompt separately in the stream call
-            # Use the 'messages' list which contains user/assistant roles
-            claude_messages = [m for m in messages if m.get("role") != "system"] # Ensure system isn't duplicated
+            claude_messages = [m for m in messages if m.get("role") != "system"]
             with anthropic_client.messages.stream(
-                model=model_name, max_tokens=1024, system=system_prompt, messages=claude_messages, temperature=0.5
+                model=model_name, max_tokens=4096, system=system_prompt, messages=claude_messages, temperature=0.5 # Use claude_messages here
             ) as stream:
-                 # ... (rest of Anthropic streaming logic - no changes needed here) ...
                 for text_chunk in stream.text_stream:
-                    model_response_text += text_chunk
-                    if window_ref and window_ref.winfo_exists():
-                        window_ref.after(0, lambda txt=text_chunk: _update_review_conversation_gui(convo_widget, txt, "model_response", append=True))
+                    full_response_buffer += text_chunk
+                    # No immediate GUI update here
             final_msg = stream.get_final_message()
             if final_msg.stop_reason not in ['end_turn', 'stop_sequence']:
-                 error_message = f"Model stopped unexpectedly ({final_msg.stop_reason})."
+                error_message = f"Model stopped unexpectedly ({final_msg.stop_reason})."
 
         else:
             raise ValueError(f"Follow-up query not implemented for provider: {api_provider}")
 
-        # Add a newline after the complete response for separation
-        if model_response_text and window_ref and window_ref.winfo_exists():
-            window_ref.after(0, lambda: _update_review_conversation_gui(convo_widget, "\n", "model_response", append=True))
+        # --- Process Full Response ---
+        model_response_text = full_response_buffer.strip()
+
+        # ** Heuristic to detect if response is a revised SOP **
+        # Check if it starts like a typical SOP and is reasonably long
+        is_likely_sop = False
+        if model_response_text:
+            first_lines = model_response_text.splitlines()[:3] # Check first few lines
+            starts_with_heading = any(line.strip().startswith(('#', '1.', '*')) for line in first_lines)
+            has_common_section = any(word in model_response_text.lower() for word in ["purpose", "scope", "procedure", "responsibility"])
+            # Adjust length threshold based on typical SOP size
+            is_long_enough = len(model_response_text) > 300 # Example threshold
+
+            if starts_with_heading and has_common_section and is_long_enough:
+                is_likely_sop = True
+
+        if is_likely_sop and not error_message:
+            is_modification_response = True # Mark as modification
+            # The actual SOP text will be updated in the 'finally' block on the main thread
+            # Prepare confirmation message for conversation history
+            confirmation_msg = "AI: The SOP has been updated based on your instruction."
+            # Add confirmation to cache history immediately
+            review_data_cache["conversation_history"].append({"role": "assistant", "content": confirmation_msg})
+            # Update cache with the new SOP content
+            review_data_cache['edited_sop'] = model_response_text
+        elif not error_message:
+            # Assume it's a regular answer
+            is_modification_response = False
+            # Add the answer to the cache history
+            review_data_cache["conversation_history"].append({"role": "assistant", "content": model_response_text})
+        else:
+            # Error occurred, treat as non-modification
+            is_modification_response = False
+            # Add error message to cache history
+            review_data_cache["conversation_history"].append({"role": "assistant", "content": f"[ERROR: {error_message}]"})
+
 
     except Exception as e:
         error_message = f"Error during query to {model_name}:\n{type(e).__name__}: {e}"
         print(f"Follow-up Query Error: {e}")
         traceback.print_exc()
-        if window_ref and window_ref.winfo_exists():
-            window_ref.after(0, lambda: _update_review_conversation_gui(convo_widget, f"\n--- {error_message} ---\n", "error_message", append=True))
+        is_modification_response = False
+        # Add error to cache history
+        review_data_cache["conversation_history"].append({"role": "assistant", "content": f"[ERROR: {error_message}]"})
 
     finally:
-        # --- Update GUI State (on main thread) ---
-        # ... (rest of finally block - no changes needed here) ...
+        # --- Schedule Final GUI Update (on main thread) ---
         if window_ref and window_ref.winfo_exists():
-            def final_update():
+            # Pass necessary info: error status, response text, and modification flag
+            def final_update_gui(is_error, response, is_mod):
                 # Re-enable button
                 if button_widget and button_widget.winfo_exists():
                     try: button_widget.config(state=tk.NORMAL)
                     except tk.TclError: pass
-                # Update status
+
+                # Update status bar
                 if status_var:
-                    final_status = "Status: Model response received." if not error_message else "Status: Error receiving model response."
+                    final_status = "Status: Error receiving response." if is_error else \
+                                   "Status: SOP updated." if is_mod else \
+                                   "Status: Model response received."
                     try: status_var.set(final_status)
                     except tk.TclError: pass
-                # Add complete model response (or error marker) to cache history
-                if not error_message and model_response_text:
-                    review_data_cache["conversation_history"].append({"role": "assistant", "content": model_response_text})
-                elif error_message:
-                     review_data_cache["conversation_history"].append({"role": "assistant", "content": f"[ERROR: {error_message}]"})
 
-            window_ref.after(0, final_update)
+                # Update Conversation or Editor GUI
+                if is_error:
+                    _update_review_conversation_gui(convo_widget, f"\n--- {response} ---\n", "error_message", append=True)
+                elif is_mod:
+                    # Update EDITOR with the full SOP response
+                    if hasattr(window_ref, 'sop_editor') and window_ref.sop_editor.winfo_exists():
+                         _update_review_editor_gui(window_ref.sop_editor, response) # Pass the full SOP text
+                    # Update CONVERSATION with confirmation message
+                    _update_review_conversation_gui(convo_widget, "AI: The SOP has been updated based on your instruction.\n", "model_response", append=False) # Use append=False to show as new turn
+                else:
+                    # Update CONVERSATION with the AI's answer
+                    _update_review_conversation_gui(convo_widget, f"AI: {response}\n", "model_response", append=False) # Use append=False
+
+            # Determine the 'response' content to pass based on error/modification status
+            response_to_pass = error_message if error_message else model_response_text
+            window_ref.after(0, lambda err=bool(error_message), resp=response_to_pass, is_mod=is_modification_response:
+                             final_update_gui(err, resp, is_mod))
+
+
+def _update_review_editor_gui(widget, text):
+    """Safely replaces the content of the SOP editor widget."""
+    if not widget or not widget.winfo_exists(): return
+    try:
+        widget.config(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        widget.insert("1.0", text)
+        # No need to disable editor - it should remain editable
+        # widget.config(state=tk.DISABLED)
+    except tk.TclError as e:
+        print(f"TclError updating editor widget: {e}")
+    except Exception as e:
+        print(f"Unexpected error updating editor widget: {e}")
+
 
 
 def _update_review_conversation_gui(widget, text, tag, append=False, replace=False):
