@@ -1,5 +1,6 @@
 import openai
 import config
+from PyPDF2 import PdfReader
 
 # --- Initialize API Clients ---
 # --- OpenAI Client ---
@@ -16,9 +17,23 @@ else:
 
 
 # -- Expert file API ---
+def pdf_to_text_pypdf2(pdf_path):
+    text = ""
+    try:
+        with open(pdf_path, 'rb') as pdf_file:
+            pdf_reader = PdfReader(pdf_file)
+            for page_num in range(len(pdf_reader.pages)):
+                page = pdf_reader.pages[page_num]
+                text += page.extract_text()
+    except FileNotFoundError:
+        return f"Error: File not found at {pdf_path}"
+    except Exception as e:
+        return f"Error processing PDF: {e}"
+    return text.strip()
+
 expert_file = None
 try:
     expert_filename = config.EXPERT_FILE_PATH
-    expert_file = open(expert_filename)
+    expert_text = pdf_to_text_pypdf2(expert_filename)
 except Exception as e:
     print(f"Error {e} opening user file {expert_filename}")

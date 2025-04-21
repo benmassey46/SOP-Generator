@@ -1348,7 +1348,7 @@ def check_model_availability(model_name):
         return bool(ANTHROPIC_API_KEY) and bool(anthropic_client)
     # Add checks for other providers if introduced later
     elif provider == "User":
-        return bool(apis.expert_file)
+        return bool(apis.expert_text)
     return False # Default to unavailable if provider is unknown
 
 
@@ -2489,8 +2489,7 @@ def stream_sop_thread(ai_model, sop_topic, additional_context, final_system_mess
                  generation_successful = True
 
         elif ai_model.startswith("expert-file"):
-            apis.expert_file.seek(0)
-            text_buffer = apis.expert_file.read()
+            text_buffer = apis.expert_text
             if text_buffer: root.after(0, lambda txt=text_buffer, widget=target_widget: insert_text_safely(widget, txt, replace=False))
 
         else:
