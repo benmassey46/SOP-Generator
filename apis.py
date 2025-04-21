@@ -32,11 +32,9 @@ def pdf_to_text_pypdf2(pdf_path):
         return f"Error processing PDF: {e}"
     return text.strip()
 
-expert_file = None
 try:
     expert_filename = config.EXPERT_FILE_PATH
     file_path = Path(expert_filename)
-    print(f"file_path: {file_path.suffix}")
     if(file_path.suffix==".pdf"):
         expert_text = pdf_to_text_pypdf2(expert_filename)
     elif (file_path.suffix==".txt"):
