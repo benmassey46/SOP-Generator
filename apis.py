@@ -1,7 +1,8 @@
 import openai
 import config
 from PyPDF2 import PdfReader
-
+from pathlib import Path
+ 
 # --- Initialize API Clients ---
 # --- OpenAI Client ---
 openai_client = None
@@ -34,6 +35,14 @@ def pdf_to_text_pypdf2(pdf_path):
 expert_file = None
 try:
     expert_filename = config.EXPERT_FILE_PATH
-    expert_text = pdf_to_text_pypdf2(expert_filename)
+    file_path = Path(expert_filename)
+    print(f"file_path: {file_path.suffix}")
+    if(file_path.suffix==".pdf"):
+        expert_text = pdf_to_text_pypdf2(expert_filename)
+    elif (file_path.suffix==".txt"):
+        f = open(expert_filename)
+        expert_text = f.read()
+    else:
+        print("WARNING: file suffix unsupported")
 except Exception as e:
     print(f"Error {e} opening user file {expert_filename}")
