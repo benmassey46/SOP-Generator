@@ -1,13 +1,13 @@
 
 ## Results
 
-Rank order each model from each provider fot text generation
+Rank order each model from each provider on their text generation ability
 e.g. 
-gpt-4o
+gpt-4o (best)
 gpt-4-turbo
-gpt
+gpt-4 (worst)
 do the same for gemini and claude. 
-probably need some links to support this ranking
+probably need some literature/provider links to support this ranking assertion
 
 select 2 or 3 SOP types
 
