@@ -35,8 +35,8 @@ i.e. did the model wander off topic or make syntax/format errors in the output
 -----------------------------------
 Additional:
 - Feed the expert file example text into the few shot example input window and generate SOP for the best models (and maybe worse models)  
-- calculate diff, review and structure metrics for the SOP generated with the few shot example input against without few show example input
-- discuss if the generated output gets enhanced (or not) with the few shot input and if these enhancments add value (or not) from the expert doc over and above than what the model generated on its own
+- calculate diff, review and structure metrics for the SOP generated with the few shot example input against without few shot example input
+- discuss if the generated output gets enhanced (or not) with the few shot input and if these enhancments add value (or not) gained when the expert doc was present in the SOP generation process 
 
 
 
