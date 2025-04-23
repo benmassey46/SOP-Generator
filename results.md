@@ -26,8 +26,8 @@ SOP generation task
 
 - Could also do multiple runs with the same model pairs 
 and see if the metrics significantly difference
-- Discuss the metrics, do they align when comparing the best models, are they significantly different comparing 
-best to worse ranked model?
+- Discuss the metrics, do they align when comparing the best models, are they significantly different when comparing 
+best to worse ranked models in and across providers?
 
 Could also do some manual checking to see if anything doesn't make sense
 i.e. did the model wander off topic or make syntax/format errors in the output
