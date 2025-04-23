@@ -2,19 +2,21 @@
 ## Results
 
 Rank order each model from each provider on their text generation ability
+
 e.g. 
-gpt-4o (best)
-gpt-4-turbo
-gpt-4 (worst)
-do the same for gemini and claude. 
+- gpt-4o (best?)
+- gpt-4-turbo
+- gpt-4 (worst?)
+
+Do the same for gemini and claude. 
 probably need some literature/provider links to support this ranking assertion
 
 - select 2 or 3 SOP types
 - for each SOP type
-- generate SOP using a pair of models*
-- auto calculate review metrics for each model pair
-- auto calculate difference metrics for each model pair
-- auto calculate structure and content differences 
+  - generate SOP using a pair of models*
+  - auto calculate review metrics for each model pair
+  - auto calculate difference metrics for each model pair
+  - auto calculate structure and content differences 
 
 *pair of models - compare the top most ranked 
 and then between the top most ranked and worst ranked
@@ -32,10 +34,9 @@ i.e. did the model wander off topic or make syntax/format errors in the output
 
 -----------------------------------
 Additional:
-- Feed the expert file into the few shot examples and generate SOP for the best (and maybe worse models)  
-- calculate diff, review and structure metrics for the SOP generated with the few shot example
-- discuss if the generated output gets enhanced with the 
-few shot input and if these enhancments add value (or not) to what was already there
+- Feed the expert file example text into the few shot example input window and generate SOP for the best models (and maybe worse models)  
+- calculate diff, review and structure metrics for the SOP generated with the few shot example input against without few show example input
+- discuss if the generated output gets enhanced (or not) with the few shot input and if these enhancments add value (or not) from the expert doc over and above than what the model generated on its own
 
 
 
