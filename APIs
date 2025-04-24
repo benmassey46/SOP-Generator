@@ -1,0 +1,41 @@
+import openai
+import config
+from PyPDF2 import PdfReader
+
+# --- Initialize API Clients ---
+# --- OpenAI Client ---
+openai_client = None
+if config.OPENAI_API_KEY:
+    try:
+        openai_client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+        print("OpenAI client initialized successfully.")
+    except Exception as e:
+        print(f"Error initializing OpenAI client: {e}. OpenAI functions unavailable.")
+        config.OPENAI_API_KEY = None # Mark as unavailable
+else:
+    print("Warning: OPENAI_API_KEY environment variable not found. OpenAI functions unavailable.")
+
+
+# -- Expert file API ---
+
+try:
+    expert_filename = config.EXPERT_FILE_PATH
+    print(expert_filename)
+    text = ""
+    try:
+        with open(expert_filename, 'rb') as pdf_file:
+            pdf_reader = PdfReader(pdf_file)
+            for page_num in range(len(pdf_reader.pages)):
+                page = pdf_reader.pages[page_num]
+                text += page.extract_text()
+    except FileNotFoundError:
+        print( f"Error: File not found at {expert_filename}")
+    except Exception as e:
+        print( f"Error processing PDF: {e}")
+    expert_text = text.strip()
+    if expert_text:
+        print(f"Expert file {expert_filename} loaded successfully.")
+    else:
+        print(f"Error: No text extracted from {expert_filename}.")
+except Exception as e:
+    print(f"Error {e} opening user file {expert_filename}")
