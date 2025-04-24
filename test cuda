@@ -1,0 +1,14 @@
+import torch
+from bert_score import score
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"Using device: {device}")
+
+try:
+    cands = ["hello there"]
+    refs = ["hello world"]
+    P, R, F1 = score(cands, refs, lang='en', model_type='bert-base-uncased', device=device, verbose=True)
+    print(F1)
+except Exception as e:
+    print(f"Error: {e}")
+    # Check if the error message matches
