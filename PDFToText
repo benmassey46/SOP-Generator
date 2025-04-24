@@ -1,0 +1,141 @@
+import os
+import fitz  # PyMuPDF library
+import sys
+import time
+
+def convert_pdfs_in_folder(folder_path):
+    """
+    Converts all PDF files found in the specified folder_path to TXT files,
+    and DELETES the original PDF after successful conversion.
+
+    Args:
+        folder_path (str): The absolute or relative path to the folder
+                           containing PDF files.
+    """
+    # 1. Validate folder path
+    if not os.path.isdir(folder_path):
+        print(f"Error: Folder not found or is not a valid directory.")
+        print(f"Path provided: {folder_path}")
+        return
+
+    print(f"Starting conversion process in folder: {folder_path}")
+    print("!!! WARNING: Original PDF files will be DELETED after successful conversion. !!!")
+    # Add a small delay or confirmation prompt if desired
+    # time.sleep(3)
+    # confirm = input("Type 'YES' to continue with deletion: ")
+    # if confirm != 'YES':
+    #     print("Operation cancelled by user.")
+    #     return
+    print("="*60)
+
+
+    pdf_files_found = 0
+    converted_count = 0
+    deleted_count = 0
+    error_count = 0
+    deletion_error_count = 0
+    start_time = time.time()
+
+    # 2. Iterate through all items in the directory
+    for filename in os.listdir(folder_path):
+        # 3. Check if the file is a PDF
+        if filename.lower().endswith(".pdf"):
+            pdf_files_found += 1
+            pdf_path = os.path.join(folder_path, filename)
+            txt_filename = os.path.splitext(filename)[0] + ".txt"
+            txt_path = os.path.join(folder_path, txt_filename)
+
+            print(f"\nProcessing: {filename}...")
+
+            try:
+                # 4. Open the PDF file using PyMuPDF
+                doc = fitz.open(pdf_path)
+
+                # Check if PDF is encrypted
+                if doc.is_encrypted and not doc.authenticate(""):
+                     print(f"  -> Skipped: PDF is password-protected and couldn't be opened.")
+                     doc.close()
+                     continue
+
+                full_text = ""
+                # 5. Extract text from each page
+                for page_num in range(len(doc)):
+                    page = doc.load_page(page_num)
+                    full_text += page.get_text("text")
+                    full_text += "\n--- Page Break ---\n"
+
+                doc.close() # Close the PDF document *before* writing/deleting
+
+                # 6. Write the extracted text to a TXT file
+                with open(txt_path, "w", encoding="utf-8") as txt_file:
+                    txt_file.write(full_text)
+
+                print(f"  -> Success: Converted to {txt_filename}")
+                converted_count += 1
+
+                # --- >>> 7. Delete the original PDF file <<< ---
+                try:
+                    os.remove(pdf_path)
+                    print(f"  -> Deleted original: {filename}")
+                    deleted_count += 1
+                except OSError as oe:
+                    print(f"  -> Error deleting original file '{filename}': {oe}")
+                    print(f"     Please check file permissions or if the file is open elsewhere.")
+                    deletion_error_count += 1
+                # --- End Deletion ---
+
+            except fitz.errors.FitzError as fe:
+                 print(f"  -> Error (PyMuPDF): Could not process PDF '{filename}'. It might be corrupted or use an unsupported format. Details: {fe}")
+                 error_count += 1
+                 # Ensure doc is closed if error happened after opening
+                 try:
+                    if 'doc' in locals() and doc:
+                        doc.close()
+                 except: pass # Ignore closing error
+            except Exception as e:
+                print(f"  -> Error: An unexpected error occurred while converting '{filename}': {e}")
+                error_count += 1
+                # Ensure doc is closed if error happened after opening
+                try:
+                    if 'doc' in locals() and doc:
+                        doc.close()
+                except: pass # Ignore closing error
+
+
+    # 8. Print Summary
+    end_time = time.time()
+    duration = end_time - start_time
+    print("\n" + "="*60)
+    print("Conversion and Deletion Complete!")
+    print(f"Total PDF files found:        {pdf_files_found}")
+    print(f"Successfully converted (TXT): {converted_count}")
+    print(f"Successfully deleted (PDF):   {deleted_count}")
+    print(f"Conversion errors:            {error_count}")
+    print(f"Deletion errors:              {deletion_error_count}")
+    print(f"Skipped (e.g., passworded):   {pdf_files_found - converted_count - error_count}")
+    print(f"Total time taken:             {duration:.2f} seconds")
+    print("="*60)
+
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    print("PDF to TXT Batch Converter (with PDF Deletion)")
+    print("---------------------------------------------")
+    print("!!! WARNING: THIS SCRIPT WILL DELETE ORIGINAL PDF FILES AFTER CONVERSION !!!")
+    print("!!!          PLEASE BACK UP YOUR FILES BEFORE PROCEEDING.             !!!")
+    print("-" * 70)
+
+
+    # Get folder path from user input
+    folder_to_scan = input("Enter the full path to the folder containing PDF files: ").strip()
+
+    # Optional: Add a confirmation step here
+    confirm = input(f"Are you sure you want to convert PDFs in '{folder_to_scan}' and DELETE the originals? Type 'YES' to confirm: ")
+    if confirm.upper() != 'YES':
+        print("Operation cancelled by user.")
+    else:
+        # Run the conversion and deletion function
+        convert_pdfs_in_folder(folder_to_scan)
+
+    # Keep the console window open until the user presses Enter
+    input("\nPress Enter to exit...")
