@@ -1,0 +1,1323 @@
+# BERT_Err: BERTScore Error: Cannot copy out of meta tensor; no data! Please use torch.nn.Module.to_empty() instead of torch.nn.Module.to() when moving module from meta to a different device. (Meta Tensor Issue);
+# ^^ NOTE: This error originates from within the bert_score library (or its dependencies like transformers/pytorch)
+# when using GPU acceleration (device='cuda'). It often indicates an issue with model loading/initialization
+# related to newer PyTorch versions' "meta" device concept.
+#
+# Potential Solutions (External to this script's logic):
+# 1. Update Libraries: Ensure `torch`, `transformers`, `bert-score`, and `accelerate` (if installed) are up-to-date:
+#    `pip install --upgrade torch transformers bert-score accelerate`
+# 2. Environment Check: Verify CUDA and PyTorch installation compatibility.
+# 3. Force CPU: If GPU issues persist, modify the script to force CPU use for BERTScore or run in a CPU-only environment.
+# 4. Report Issue: If updates don't resolve it, consider reporting it to the `bert-score` library maintainers with version details.
+#
+# This script already correctly passes the desired device ('cuda' or 'cpu') and catches/reports this specific error.
+# No changes are made below *specifically* to fix the "meta tensor" issue, as the fix lies in the library versions or environment.
+
+# --- Imports ---
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, Listbox
+import os
+import re
+import time
+import warnings
+import numpy as np
+import traceback
+from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
+import nltk # Keep NLTK import attempt
+import threading
+import queue
+import csv
+from itertools import combinations
+import concurrent.futures # For parallelism
+
+# --- NLTK Setup (Ensure averaged_perceptron_tagger and sent_tokenize are handled) ---
+NLTK_READY = False
+NLTK_MESSAGE = "NLTK library missing or data download failed."
+try:
+    # Check for essential data files first
+    nltk.data.find('tokenizers/punkt')
+    nltk.data.find('corpora/stopwords')
+    nltk.data.find('taggers/averaged_perceptron_tagger')
+    # If checks pass, import the necessary components
+    from nltk.corpus import stopwords
+    from nltk.tokenize import word_tokenize, sent_tokenize
+    STOPWORDS = set(stopwords.words('english'))
+    NLTK_READY = True
+    NLTK_MESSAGE = "NLTK Ready."
+except LookupError:
+    NLTK_MESSAGE = "NLTK data (punkt/stopwords/tagger) not found. Attempting download..."
+    print(NLTK_MESSAGE)
+    try:
+        nltk.download('punkt', quiet=True)
+        nltk.download('stopwords', quiet=True)
+        nltk.download('averaged_perceptron_tagger', quiet=True)
+        # Re-import after download
+        from nltk.corpus import stopwords
+        from nltk.tokenize import word_tokenize, sent_tokenize
+        STOPWORDS = set(stopwords.words('english'))
+        NLTK_READY = True
+        NLTK_MESSAGE = "NLTK Ready (after download)."
+        print("NLTK download successful.")
+    except Exception as e:
+        print(f"NLTK download failed: {e}")
+        NLTK_MESSAGE = f"NLTK download failed: {e}. Functionality limited."
+        # Define dummy functions or set STOPWORDS to empty to avoid NameErrors later
+        STOPWORDS = set()
+        def word_tokenize(text): return text.split()
+        def sent_tokenize(text): return [text]
+except ImportError:
+     NLTK_MESSAGE = "NLTK library not found. Install with 'pip install nltk'. Functionality limited."
+     print(NLTK_MESSAGE)
+     STOPWORDS = set()
+     def word_tokenize(text): return text.split()
+     def sent_tokenize(text): return [text]
+print(NLTK_MESSAGE) # Print final NLTK status
+
+# --- Optional Dependency Checks ---
+TEXTSTAT_AVAILABLE = False
+try:
+    import textstat; TEXTSTAT_AVAILABLE = True; print("Textstat library found.")
+except ImportError: print("Warning: 'textstat' missing. Readability metrics unavailable.")
+
+GENSIM_AVAILABLE = False; POT_AVAILABLE = False; WMD_MESSAGE = "WMD dependencies missing."
+try:
+    import gensim; GENSIM_AVAILABLE = True
+    try: import ot; POT_AVAILABLE = True; WMD_MESSAGE = "WMD Ready (provide model path)."
+    except ImportError: WMD_MESSAGE = "WMD unavailable ('POT' missing)."; GENSIM_AVAILABLE = False # POT is required for WMD
+except ImportError: WMD_MESSAGE = "WMD unavailable ('gensim' missing)."
+print(WMD_MESSAGE)
+
+BERTSCORE_AVAILABLE = False; TORCH_AVAILABLE = False; BS_MESSAGE = "BERTScore dependencies missing."
+try:
+    import torch; TORCH_AVAILABLE = True
+    # Check CUDA availability here for logging purposes
+    CUDA_AVAILABLE_MSG = "CUDA available." if torch.cuda.is_available() else "CUDA unavailable (will use CPU)."
+    print(f"Torch found. {CUDA_AVAILABLE_MSG}")
+    from bert_score import score as bert_score_calc; BERTSCORE_AVAILABLE = True; BS_MESSAGE = "BERTScore Ready."
+except ImportError:
+    if not TORCH_AVAILABLE: BS_MESSAGE = "BERTScore unavailable ('torch' missing)."
+    else: BS_MESSAGE = "BERTScore unavailable ('bert_score' missing)." # Torch is present, but bert_score is not
+print(BS_MESSAGE)
+
+ST_AVAILABLE = False
+try:
+    from sentence_transformers import SentenceTransformer, util; ST_AVAILABLE = True; print("Sentence-Transformers library found.")
+except ImportError: print("Error: 'sentence-transformers' missing. Cosine Similarity (ST) unavailable.")
+
+OPENAI_AVAILABLE = False
+try:
+    # Use OpenAI v1+ syntax
+    from openai import OpenAI; OPENAI_AVAILABLE = True; print("OpenAI library found (v1+).")
+except ImportError: print("Warning: 'openai' missing or outdated (needs v1+). OpenAI Cosine Similarity unavailable.")
+
+# --- Suppress Warnings ---
+# Suppress POT warning if not available or if import fails (already handled)
+# Suppress specific warnings that are often noisy and not critical
+warnings.filterwarnings("ignore", message=r".*POT does not seem to be installed.*")
+warnings.filterwarnings("ignore", message=r".*Neither `max_length`.*")
+warnings.filterwarnings("ignore", message=r".*sentence_transformers.cross_encoder.*")
+warnings.filterwarnings("ignore", message=r".*TorchScript only supports a subset of Python.*") # Can appear with ST models
+
+# --- Configuration ---
+DEFAULT_ST_MODEL = os.getenv("ST_MODEL_NAME", 'Snowflake/snowflake-arctic-embed-l') # Allow override via .env
+DEFAULT_WMD_MODEL_PATH = os.getenv("WMD_MODEL_PATH", "")
+DEFAULT_OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small") # Allow override, default to newer cheaper model
+DEFAULT_MAX_FILES = 9
+DEFAULT_OUTPUT_FILENAME = "comparison_results_optimized.csv"
+# Use os.cpu_count() but allow override via environment variable if needed
+MAX_WORKERS = int(os.getenv("MAX_COMPARISON_WORKERS", os.cpu_count() or 1)) # Ensure at least 1
+
+# =============================================================================
+# Backend Logic (Optimized)
+# =============================================================================
+
+# --- Helper Functions ---
+def read_file(filepath):
+    """Reads a file safely, returning content or error message."""
+    if not filepath or not os.path.exists(filepath): return None, f"File not found: {filepath}"
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f: # Ignore decoding errors
+            return f.read(), None
+    except Exception as e: return None, f"Error reading file {os.path.basename(filepath)}: {e}"
+
+def preprocess_text_simple(text):
+    """Basic tokenization for Jaccard."""
+    if not text: return []
+    try:
+        # Use NLTK if available and ready
+        return word_tokenize(text.lower())
+    except Exception: # Fallback if NLTK fails for some reason
+        return text.lower().split()
+
+def preprocess_text_wmd(text):
+    """Preprocessing specific to WMD calculation."""
+    if not text: return []
+    text = text.lower()
+    text = re.sub(r'[^\w\s]', '', text) # Remove punctuation
+    try:
+        # Use NLTK if available and ready
+        tokens = word_tokenize(text)
+        stop_words = STOPWORDS # Use loaded stopwords
+        return [word for word in tokens if word.isalpha() and word not in stop_words]
+    except Exception: # Fallback if NLTK fails
+         tokens = text.split()
+         # Basic fallback stopwords if NLTK failed completely
+         basic_stopwords = {'the', 'a', 'an', 'is', 'are', 'to', 'in', 'it', 'of', 'for', 'on', 'with', 'and', 'that', 'this'}
+         return [word for word in tokens if word.isalpha() and word not in basic_stopwords]
+
+# --- Similarity Metrics (Optimized Calls) ---
+def calculate_jaccard(tokens1, tokens2):
+    """Calculates Jaccard similarity from pre-tokenized lists."""
+    if not tokens1 and not tokens2: return 1.0, None # Both empty, considered identical
+    if not tokens1 or not tokens2: return 0.0, None # One empty, zero similarity
+    set1 = set(tokens1); set2 = set(tokens2)
+    intersection = len(set1.intersection(set2))
+    union = len(set1.union(set2))
+    return (float(intersection) / union if union > 0 else 0.0), None
+
+def calculate_cosine_st_from_embeddings(embedding1, embedding2):
+    """Calculates cosine similarity from pre-computed Sentence Transformer embeddings."""
+    if not ST_AVAILABLE: return None, "Sentence Transformers library not available."
+    if embedding1 is None or embedding2 is None:
+        return None, "Missing pre-computed ST embedding."
+    try:
+        # Ensure embeddings are PyTorch tensors on the CPU for consistent calculation
+        if not isinstance(embedding1, torch.Tensor): embedding1 = torch.tensor(np.array(embedding1))
+        if not isinstance(embedding2, torch.Tensor): embedding2 = torch.tensor(np.array(embedding2))
+
+        # Move to CPU just in case they somehow ended up elsewhere, though cache should be CPU
+        embedding1 = embedding1.cpu()
+        embedding2 = embedding2.cpu()
+
+        # Reshape if they are flat arrays (util.cos_sim expects 2D)
+        if len(embedding1.shape) == 1: embedding1 = embedding1.unsqueeze(0)
+        if len(embedding2.shape) == 1: embedding2 = embedding2.unsqueeze(0)
+
+        # util.cos_sim is efficient for this
+        cosine_score = util.cos_sim(embedding1, embedding2).item()
+        # Clamp result to [0, 1] as similarity should be non-negative, and sometimes scores slightly exceed 1.0
+        return np.clip(cosine_score, 0.0, 1.0), None
+    except Exception as e:
+        return None, f"ST Cosine (from embed) Error: {e}"
+
+def calculate_cosine_openai_from_embeddings(embedding1, embedding2):
+    """Calculates cosine similarity from pre-computed OpenAI embeddings."""
+    if not OPENAI_AVAILABLE: return None, "OpenAI library not available."
+    if embedding1 is None or embedding2 is None:
+        return None, "Missing pre-computed OpenAI embedding."
+    try:
+        # Ensure embeddings are numpy arrays of the correct shape
+        vec1 = np.array(embedding1, dtype=np.float32).reshape(1, -1)
+        vec2 = np.array(embedding2, dtype=np.float32).reshape(1, -1)
+        # Use sklearn's cosine_similarity for robust calculation
+        similarity = sklearn_cosine_similarity(vec1, vec2)[0][0]
+        # Clamp result to [0, 1]
+        return np.clip(similarity, 0.0, 1.0), None
+    except Exception as e:
+        return None, f"OpenAI Cosine (from embed) Error: {e}"
+
+def calculate_wmd(tokens1, tokens2, wmd_model):
+    """Calculates Word Mover's Distance using a pre-loaded Gensim model (CPU)."""
+    if not GENSIM_AVAILABLE or not POT_AVAILABLE: return float('inf'), WMD_MESSAGE # Return Inf if libs missing
+    if wmd_model is None: return float('inf'), "WMD model not loaded or provided."
+    if not tokens1 or not tokens2: return float('inf'), "One or both documents have no WMD tokens."
+
+    try:
+        # Determine the vocabulary source (depends on Gensim model type)
+        if hasattr(wmd_model, 'wv') and hasattr(wmd_model.wv, 'key_to_index'):
+            model_vocab = wmd_model.wv.key_to_index # Full Word2Vec/FastText model
+        elif hasattr(wmd_model, 'key_to_index'):
+            model_vocab = wmd_model.key_to_index # KeyedVectors model
+        else:
+            return float('inf'), "Invalid WMD model object (missing vocabulary)."
+
+        # Filter tokens to only those present in the model's vocabulary
+        tokens1_f = [w for w in tokens1 if w in model_vocab]
+        tokens2_f = [w for w in tokens2 if w in model_vocab]
+
+        if not tokens1_f or not tokens2_f:
+            # If, after filtering, one list is empty, WMD is infinite/undefined.
+            return float('inf'), "No overlapping vocabulary words found for WMD."
+
+        # Calculate WMD. This can be computationally intensive.
+        distance = wmd_model.wmdistance(tokens1_f, tokens2_f)
+
+        # Handle potential infinite distance result from the library itself
+        return float('inf') if distance == float('inf') else distance, None
+    except ImportError as e:
+         # Catch missing POT library error specifically if check failed earlier
+         return float('inf'), f"WMD Calc Error: Missing dependency: {e}"
+    except Exception as e:
+        # Catch other potential errors, including memory errors
+        error_msg = f"WMD Calc Error: {e}"
+        if "memory" in str(e).lower(): error_msg += " (Likely Memory Error)"
+        traceback.print_exc() # Print detailed traceback for debugging
+        return float('inf'), error_msg
+
+def calculate_bertscore(text1, text2, device, model_type='bert-base-uncased'):
+    """Calculates BERTScore F1 using specified device and model."""
+    if not BERTSCORE_AVAILABLE: return None, BS_MESSAGE
+    if not text1 or not text1.strip() or not text2 or not text2.strip():
+        # Handle empty strings gracefully
+        return 0.0, "Empty input for BERTScore."
+    try:
+        # Ensure texts are lists (bert_score expects iterables)
+        refs = [text1]
+        cands = [text2]
+
+        # Call bert_score, passing the target device
+        # Use `rescale_with_baseline=True` for better calibrated scores (0-1 range)
+        P, R, F1 = bert_score_calc(cands, refs, lang="en", verbose=False,
+                                   model_type=model_type, device=device,
+                                   rescale_with_baseline=True)
+        f1_score = F1.mean().item() # Get the scalar F1 score
+        # Clamp result to [0, 1]
+        return np.clip(f1_score, 0.0, 1.0), None
+    except Exception as e:
+        # Catch specific errors for better reporting
+        error_msg = f"BERTScore Error: {e}"
+        err_str = str(e).lower()
+        if "cuda out of memory" in err_str:
+            error_msg += " (CUDA OOM)"
+        elif "meta tensor" in err_str:
+            # This is the error reported by the user
+            error_msg += " (Meta Tensor Issue - Check PyTorch/Transformers/BERTScore versions or force CPU)"
+        elif "safetensors_rust" in err_str:
+             error_msg += " (SafeTensors Load Error - Check library install)"
+        # Print traceback for detailed debugging in console
+        traceback.print_exc()
+        return None, error_msg
+
+def calculate_hybrid(jaccard_score, bert_f1_score):
+    """Simple hybrid score: average of Jaccard and BERTScore F1."""
+    if jaccard_score is None or bert_f1_score is None:
+        return None, "Requires valid Jaccard & BERTScore F1 results."
+    try:
+        # Ensure scores are floats before averaging
+        j_score = float(jaccard_score)
+        b_score = float(bert_f1_score)
+        return (j_score + b_score) / 2.0, None
+    except (ValueError, TypeError) as e:
+        return None, f"Invalid score type for hybrid calculation: {e}"
+
+# --- Readability/Style Metrics ---
+def calculate_readability(text):
+    """Calculates Gunning Fog index using textstat."""
+    if not TEXTSTAT_AVAILABLE: return {'gunning_fog': 'N/A'}, "textstat library missing"
+    if not text or text.isspace(): return {'gunning_fog': 'EmptyFile'}, "Empty text provided"
+    try:
+        # Ensure text is reasonably long enough for meaningful calculation
+        if len(text.split()) < 50: # Heuristic threshold
+             # return {'gunning_fog': 'TooShort'}, "Text too short for reliable Fog index"
+             pass # Allow calculation but be aware it might be less reliable
+
+        fog = textstat.gunning_fog(text)
+        # Handle potential NaN or Inf results from textstat edge cases
+        if np.isnan(fog) or np.isinf(fog):
+             return {'gunning_fog': 'CalcError'}, "Textstat returned invalid number (NaN/Inf)"
+        return {'gunning_fog': fog}, None
+    except Exception as e:
+        # Catch any calculation errors within textstat
+        return {'gunning_fog': 'Error'}, f"Readability Calc Error: {e}"
+
+def is_passive(sentence_tokens, tagged_sentence):
+    """Helper to check if a tagged sentence is passive."""
+    # Common 'be' forms and past participle tag
+    be_forms = {'am', 'is', 'are', 'was', 'were', 'be', 'being', 'been'}
+    past_participle_tag = 'VBN'
+    # Tags that can indicate a form of 'be'
+    be_tags = {'VB', 'VBP', 'VBZ', 'VBG', 'VBD', 'VBN'}
+
+    for i, (word, tag) in enumerate(tagged_sentence):
+        word_lower = word.lower()
+        # Check if the word is a form of 'be' and has an appropriate tag
+        if word_lower in be_forms and tag in be_tags:
+            # Look ahead for a past participle (VBN)
+            if i + 1 < len(tagged_sentence):
+                next_word, next_tag = tagged_sentence[i+1]
+                if next_tag == past_participle_tag:
+                    # Avoid common exceptions like "is located", "is based" - heuristic
+                    if next_word.lower() not in ['located', 'situated', 'based', 'born']:
+                         return True
+            # Check if 'been' is followed by VBN (e.g., "has been done")
+            if word_lower == 'been' and tag == 'VBN':
+                 if i > 0: # Ensure 'been' is not the first word
+                     prev_word, prev_tag = tagged_sentence[i-1]
+                     # Check for auxiliary verb before 'been' (e.g., 'has', 'have', 'had')
+                     if prev_tag in ['VBZ', 'VBP', 'VBD']:
+                          return True # Likely passive form like "has been VBN"
+    return False
+
+def calculate_passive_voice_ratio(text):
+    """Calculates the ratio of passive voice sentences using NLTK POS tagging."""
+    if not NLTK_READY or not nltk.data.find('taggers/averaged_perceptron_tagger'):
+        return 'N/A', "NLTK tagger missing or NLTK not ready"
+    if not text or text.isspace(): return 0.0, "Empty text provided" # Return 0.0 for empty text
+
+    try:
+        # Sentence tokenize first
+        try: sentences = sent_tokenize(text)
+        except Exception as sent_err: return 'Error', f"Sentence tokenization error: {sent_err}"
+
+        if not sentences: return 0.0, None # No sentences, ratio is 0
+
+        passive_count = 0
+        analyzed_sentence_count = 0 # Count sentences complex enough to analyze
+
+        for sentence in sentences:
+            # Skip very short sentences unlikely to be passive or analyzable
+            if len(sentence.split()) < 3: continue
+
+            try:
+                # Word tokenize and POS tag the sentence
+                tokens = word_tokenize(sentence)
+                tagged = nltk.pos_tag(tokens)
+                # Check if the tagged sentence is passive
+                if is_passive(tokens, tagged):
+                    passive_count += 1
+                analyzed_sentence_count += 1
+            except Exception as tag_err:
+                # Log or ignore tagging errors for single sentences
+                # print(f"Warning: Could not tag sentence: {sentence[:50]}... Error: {tag_err}")
+                pass # Continue with the next sentence
+
+        # Calculate ratio based on sentences that were successfully analyzed
+        if analyzed_sentence_count == 0:
+             # This happens if all sentences were too short or tagging failed for all
+             return 0.0 if len(sentences) == 0 else 'TaggingError', "No sentences could be analyzed for passivity"
+
+        ratio = passive_count / analyzed_sentence_count
+        return ratio, None
+    except Exception as e:
+        # Catch broader errors during the process
+        return 'Error', f"Passive Ratio Calc Error: {e}"
+
+
+# --- Function to Process a Single Pair (Excluding WMD) ---
+def process_single_pair(args):
+    """
+    Calculates all pairwise metrics EXCEPT WMD for a single pair of files.
+    Designed to be run in parallel. Uses pre-cached/calculated data.
+    WMD will be calculated sequentially later.
+    """
+    # Unpack arguments including the bert_device and bert_model_type
+    fpath1, fpath2, file_data_cache, st_embeddings, openai_embeddings, bert_device, bert_model_type = args
+    fname1 = os.path.basename(fpath1)
+    fname2 = os.path.basename(fpath2)
+
+    # Retrieve cached data for the pair
+    data1 = file_data_cache.get(fpath1)
+    data2 = file_data_cache.get(fpath2)
+    # Retrieve cached embeddings (expected to be CPU tensors/numpy arrays)
+    st_emb1 = st_embeddings.get(fpath1)
+    st_emb2 = st_embeddings.get(fpath2)
+    oai_emb1 = openai_embeddings.get(fpath1)
+    oai_emb2 = openai_embeddings.get(fpath2)
+
+    # Initialize result dict with placeholders
+    pair_result = {
+        'File1': fname1, 'File2': fname2,
+        'File1_GunningFog': data1['metrics'].get('gunning_fog', 'CacheMiss') if data1 else 'DataMissing',
+        'File1_PassivePerc': data1['metrics'].get('passive_ratio', 'CacheMiss') if data1 else 'DataMissing',
+        'File2_GunningFog': data2['metrics'].get('gunning_fog', 'CacheMiss') if data2 else 'DataMissing',
+        'File2_PassivePerc': data2['metrics'].get('passive_ratio', 'CacheMiss') if data2 else 'DataMissing',
+        'Jaccard': None, 'Cosine_ST': None, 'Cosine_OpenAI': None,
+        'WMD': 'Pending', # Will be filled later sequentially
+        'BERTScore_F1': None, 'Hybrid_Jacc_BERT': None,
+        'Error': None # Store cumulative errors for this pair
+    }
+
+    error_log = [] # Collect errors for this pair
+
+    try:
+        # Check if essential data is present
+        if not data1 or data1.get('content') is None:
+            error_log.append(f"DataMissing: Missing cached data/content for {fname1}")
+        if not data2 or data2.get('content') is None:
+             error_log.append(f"DataMissing: Missing cached data/content for {fname2}")
+
+        # Proceed only if both files have content
+        if data1 and data2 and data1.get('content') is not None and data2.get('content') is not None:
+            # --- Calculations using cached/pre-computed data (excluding WMD) ---
+
+            # Jaccard Similarity
+            jaccard_score, jac_err = calculate_jaccard(data1.get('tokens_simple', []), data2.get('tokens_simple', []))
+            pair_result['Jaccard'] = jaccard_score
+            if jac_err: error_log.append(f"Jaccard_Err: {jac_err}")
+
+            # Sentence Transformer Cosine Similarity
+            cosine_st_score, cs_err = calculate_cosine_st_from_embeddings(st_emb1, st_emb2)
+            pair_result['Cosine_ST'] = cosine_st_score
+            if cs_err: error_log.append(f"ST_Err: {cs_err}")
+
+            # OpenAI Cosine Similarity
+            cosine_openai_score, co_err = calculate_cosine_openai_from_embeddings(oai_emb1, oai_emb2)
+            pair_result['Cosine_OpenAI'] = cosine_openai_score
+            if co_err: error_log.append(f"OpenAI_Err: {co_err}")
+
+            # BERTScore F1 (using specified device and model)
+            bert_score, bs_err = calculate_bertscore(data1['content'], data2['content'], bert_device, bert_model_type)
+            pair_result['BERTScore_F1'] = bert_score
+            if bs_err: error_log.append(f"BERT_Err: {bs_err}") # Includes specific error details like (Meta Tensor Issue)
+
+            # Hybrid Score (Jaccard + BERTScore)
+            hybrid_score, hyb_err = calculate_hybrid(jaccard_score, bert_score)
+            pair_result['Hybrid_Jacc_BERT'] = hybrid_score
+            if hyb_err: error_log.append(f"Hybrid_Err: {hyb_err}")
+
+        else:
+            # If content was missing, mark scores as N/A or keep as None
+             pair_result['Jaccard'] = None
+             pair_result['Cosine_ST'] = None
+             pair_result['Cosine_OpenAI'] = None
+             pair_result['BERTScore_F1'] = None
+             pair_result['Hybrid_Jacc_BERT'] = None
+             pair_result['WMD'] = None # Cannot calculate WMD either
+
+    except Exception as e:
+        # Log unexpected errors during this pair's processing
+        error_log.append(f"UnexpectedPairError: {e}")
+        traceback.print_exc() # Print detailed traceback for debugging unexpected errors
+
+    # Consolidate errors into the 'Error' field
+    if error_log:
+        pair_result['Error'] = "; ".join(error_log)
+
+    return pair_result
+
+
+# =============================================================================
+# Tkinter GUI Application Class (BatchComparerApp)
+# =============================================================================
+class BatchComparerApp:
+    def __init__(self, master):
+        self.master = master
+        master.title("Optimized Batch Text Comparison Tool (CSV Output)")
+        master.geometry("850x750") # Slightly larger for better layout
+
+        # --- Styles ---
+        self.style = ttk.Style()
+        self.style.theme_use('clam') # Or 'alt', 'default', 'vista', 'xpnative'
+        self.style.configure("TLabel", padding=3, font=("Segoe UI", 9))
+        self.style.configure("TButton", padding=5, font=("Segoe UI", 9))
+        self.style.configure("TEntry", padding=3, font=("Segoe UI", 9))
+        self.style.configure("Header.TLabel", font=("Segoe UI", 11, "bold"))
+        self.style.configure("Status.TLabel", relief=tk.SUNKEN, padding=5, anchor=tk.W, font=("Segoe UI", 9))
+        self.style.configure("Error.TLabel", foreground="red", font=("Segoe UI", 9))
+        self.style.configure("Small.TLabel", font=("Segoe UI", 8))
+        self.style.configure("Run.TButton", font=("Segoe UI", 10, "bold"), padding=8, background="#4CAF50", foreground="white")
+        self.style.map("Run.TButton", background=[('active', '#45a049')])
+        self.style.configure("Browse.TButton", font=("Segoe UI", 9)) # Standard size browse buttons
+
+        # --- Variables ---
+        self.folder_path = tk.StringVar()
+        self.output_csv_path = tk.StringVar()
+        self.max_files_var = tk.IntVar(value=DEFAULT_MAX_FILES)
+        self.openai_key = tk.StringVar(value=DEFAULT_OPENAI_KEY)
+        self.wmd_model_path = tk.StringVar(value=DEFAULT_WMD_MODEL_PATH)
+        self.st_model_name = tk.StringVar(value=DEFAULT_ST_MODEL) # Add ST model selection
+        self.openai_embed_model = tk.StringVar(value=DEFAULT_OPENAI_MODEL) # Add OpenAI model selection
+
+        self.status_text = tk.StringVar(value="Status: Ready.")
+        self.status_queue = queue.Queue() # For thread-safe GUI updates
+        self.batch_results = [] # Store results before writing CSV
+
+        # --- Build UI ---
+        self.build_ui()
+        self.check_dependencies() # Log dependencies on startup
+        self.master.after(100, self.process_status_queue) # Start queue processor
+
+    def build_ui(self):
+        main_frame = ttk.Frame(self.master, padding="15")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.columnconfigure(1, weight=1) # Allow entry fields to expand
+
+        # --- Input Folder ---
+        ttk.Label(main_frame, text="Input Folder (.txt):", style="Header.TLabel").grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
+        self.folder_entry = ttk.Entry(main_frame, textvariable=self.folder_path, width=80)
+        self.folder_entry.grid(row=0, column=1, sticky=tk.EW, padx=5, pady=(0, 5))
+        self.browse_folder_btn = ttk.Button(main_frame, text="Browse...", command=self.browse_folder, style="Browse.TButton")
+        self.browse_folder_btn.grid(row=0, column=2, sticky=tk.E, padx=5, pady=(0, 5))
+
+        # --- Max Files ---
+        ttk.Label(main_frame, text="Max Files to Process:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.max_files_spinbox = ttk.Spinbox(main_frame, from_=2, to=999, textvariable=self.max_files_var, width=6, justify=tk.RIGHT)
+        self.max_files_spinbox.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(main_frame, text="(Limits processing to the first N .txt files found)", style="Small.TLabel").grid(row=1, column=1, sticky=tk.W, padx=(70, 5))
+
+        # --- Output CSV ---
+        ttk.Label(main_frame, text="Output CSV File:", style="Header.TLabel").grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.output_csv_entry = ttk.Entry(main_frame, textvariable=self.output_csv_path, width=80)
+        self.output_csv_entry.grid(row=2, column=1, sticky=tk.EW, padx=5, pady=5)
+        self.browse_output_btn = ttk.Button(main_frame, text="Save As...", command=self.browse_save_csv, style="Browse.TButton")
+        self.browse_output_btn.grid(row=2, column=2, sticky=tk.E, padx=5, pady=5)
+
+        # --- Optional Inputs / Models Frame ---
+        opts_frame = ttk.LabelFrame(main_frame, text="Model Configuration & Optional Inputs", padding="10")
+        opts_frame.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=15)
+        opts_frame.columnconfigure(1, weight=1)
+
+        # Sentence Transformer Model
+        ttk.Label(opts_frame, text="ST Model:").grid(row=0, column=0, sticky=tk.W, pady=3)
+        self.st_model_entry = ttk.Entry(opts_frame, textvariable=self.st_model_name, width=65)
+        self.st_model_entry.grid(row=0, column=1, sticky=tk.EW, padx=5, pady=3)
+        st_info = "Sentence Transformer model name (HuggingFace)" + ("" if ST_AVAILABLE else " (Library missing!)")
+        ttk.Label(opts_frame, text=st_info, style="Small.TLabel").grid(row=0, column=2, sticky=tk.W, padx=5)
+
+        # OpenAI API Key
+        ttk.Label(opts_frame, text="OpenAI API Key:").grid(row=1, column=0, sticky=tk.W, pady=3)
+        self.openai_entry = ttk.Entry(opts_frame, textvariable=self.openai_key, width=65, show="*")
+        self.openai_entry.grid(row=1, column=1, sticky=tk.EW, padx=5, pady=3)
+        openai_info = "Needed for OpenAI Cosine Sim." + ("" if OPENAI_AVAILABLE else " (Library missing!)")
+        ttk.Label(opts_frame, text=openai_info, style="Small.TLabel").grid(row=1, column=2, sticky=tk.W, padx=5)
+
+        # OpenAI Embedding Model
+        ttk.Label(opts_frame, text="OpenAI Embed Model:").grid(row=2, column=0, sticky=tk.W, pady=3)
+        self.openai_model_entry = ttk.Entry(opts_frame, textvariable=self.openai_embed_model, width=65)
+        self.openai_model_entry.grid(row=2, column=1, sticky=tk.EW, padx=5, pady=3)
+        ttk.Label(opts_frame, text="e.g., text-embedding-3-small", style="Small.TLabel").grid(row=2, column=2, sticky=tk.W, padx=5)
+
+
+        # WMD Model Path
+        ttk.Label(opts_frame, text="WMD Model Path:").grid(row=3, column=0, sticky=tk.W, pady=3)
+        self.wmd_entry = ttk.Entry(opts_frame, textvariable=self.wmd_model_path, width=65)
+        self.wmd_entry.grid(row=3, column=1, sticky=tk.EW, padx=5, pady=3)
+        self.browse_wmd_btn = ttk.Button(opts_frame, text="Browse...", command=lambda: self.browse_file(self.wmd_model_path, is_wmd=True), style="Browse.TButton")
+        self.browse_wmd_btn.grid(row=3, column=2, sticky=tk.E, padx=5)
+        wmd_info = "Word2Vec model (.bin/.vec/.model)" + ("" if GENSIM_AVAILABLE and POT_AVAILABLE else " (Libs missing!)")
+        ttk.Label(opts_frame, text=wmd_info, style="Small.TLabel").grid(row=4, column=1, columnspan=2, sticky=tk.W, padx=5)
+
+        # --- Run Button ---
+        self.run_button = ttk.Button(main_frame, text="🚀 Run Comparisons & Save CSV", command=self.start_batch_comparison, style="Run.TButton")
+        self.run_button.grid(row=4, column=0, columnspan=3, pady=20)
+
+        # --- Progress Log ---
+        log_frame = ttk.LabelFrame(main_frame, text="Progress Log", padding="10")
+        log_frame.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
+        main_frame.rowconfigure(5, weight=1) # Allow log frame to expand vertically
+
+        self.log_listbox = Listbox(log_frame, height=15, width=100, font=("Consolas", 9), borderwidth=1, relief=tk.SUNKEN)
+        self.log_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scrollbar = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_listbox.yview)
+        log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_listbox.config(yscrollcommand=log_scrollbar.set)
+
+        # --- Status Bar ---
+        self.status_label = ttk.Label(self.master, textvariable=self.status_text, style="Status.TLabel")
+        self.status_label.pack(side=tk.BOTTOM, fill=tk.X, pady=(5,0))
+
+    def browse_folder(self):
+        """Opens directory dialog to select input folder."""
+        foldername = filedialog.askdirectory(title="Select Folder Containing Text Files")
+        if foldername:
+            self.folder_path.set(foldername)
+            # Auto-suggest output file path if not already set
+            if not self.output_csv_path.get():
+                suggested_output = os.path.join(foldername, DEFAULT_OUTPUT_FILENAME)
+                self.output_csv_path.set(suggested_output)
+
+    def browse_save_csv(self):
+        """Opens file dialog to select output CSV file path."""
+        initial_dir = os.path.dirname(self.output_csv_path.get() or self.folder_path.get() or ".")
+        initial_file = os.path.basename(self.output_csv_path.get() or DEFAULT_OUTPUT_FILENAME)
+        filepath = filedialog.asksaveasfilename(title="Save Comparison Results As CSV",
+                                                defaultextension=".csv",
+                                                filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+                                                initialfile=initial_file, initialdir=initial_dir)
+        if filepath:
+            self.output_csv_path.set(filepath)
+
+    def browse_file(self, path_var, is_wmd=False):
+        """Opens file dialog to select a file (e.g., WMD model)."""
+        filetypes = [("Word2Vec Models", "*.bin *.vec *.txt *.model"), ("All Files", "*.*")] if is_wmd else [("All Files", "*.*")]
+        title = "Select WMD Model File" if is_wmd else "Select File"
+        filepath = filedialog.askopenfilename(title=title, filetypes=filetypes)
+        if filepath:
+            path_var.set(filepath)
+
+    def check_dependencies(self):
+        """Logs the status of required and optional dependencies."""
+        messages = [NLTK_MESSAGE] # Start with NLTK status
+        if TEXTSTAT_AVAILABLE: messages.append("Textstat Ready.")
+        else: messages.append("Textstat missing (Readability N/A).")
+        messages.append(WMD_MESSAGE) # Gensim/POT status
+        messages.append(BS_MESSAGE) # BERTScore/Torch status
+        if ST_AVAILABLE: messages.append("Sentence-Transformers Ready.")
+        else: messages.append("Sentence-Transformers missing (ST Cosine N/A).")
+        if OPENAI_AVAILABLE: messages.append("OpenAI Ready.")
+        else: messages.append("OpenAI missing (OpenAI Cosine N/A).")
+
+        # Add GPU status more explicitly
+        gpu_status = "CUDA unavailable (using CPU)."
+        if TORCH_AVAILABLE:
+            if torch.cuda.is_available():
+                gpu_status = f"CUDA available (GPU: {torch.cuda.get_device_name(0)})."
+            else:
+                 gpu_status = "Torch found, but CUDA unavailable (using CPU)."
+        messages.append(gpu_status)
+
+        full_message = f"Dependency Status: {'; '.join(messages)}"
+        print(full_message)
+        self.status_queue.put(("log", full_message))
+
+    def update_status(self, message):
+        """Updates the status bar label (thread-safe via queue)."""
+        if self.master.winfo_exists():
+            self.status_text.set(f"Status: {message}")
+
+    def add_log_message(self, message):
+        """Adds a message to the log listbox (thread-safe via queue)."""
+        if self.master.winfo_exists() and self.log_listbox:
+            self.log_listbox.insert(tk.END, f"{time.strftime('%H:%M:%S')} - {message}")
+            self.log_listbox.see(tk.END) # Scroll to the bottom
+            self.log_listbox.update_idletasks() # Ensure UI updates immediately
+
+    def process_status_queue(self):
+        """Processes messages from the status queue to update the GUI."""
+        try:
+            while True: # Process all messages currently in the queue
+                msg_type, message = self.status_queue.get_nowait()
+                if msg_type == "status":
+                    self.update_status(message)
+                elif msg_type == "log":
+                    self.add_log_message(message)
+                elif msg_type == "clear_log":
+                    if self.master.winfo_exists() and self.log_listbox:
+                        self.log_listbox.delete(0, tk.END)
+                elif msg_type == "error_messagebox":
+                     # Unpack title and message
+                     title, msg = message
+                     messagebox.showerror(title, msg)
+                elif msg_type == "info_messagebox":
+                     # Unpack title and message
+                     title, msg = message
+                     messagebox.showinfo(title, msg)
+                elif msg_type == "enable_run_button":
+                     if self.master.winfo_exists(): self.run_button.config(state=tk.NORMAL)
+        except queue.Empty:
+            pass # No more messages
+        finally:
+            # Reschedule after processing
+            if self.master.winfo_exists():
+                self.master.after(100, self.process_status_queue)
+
+    def start_batch_comparison(self):
+        """Validates inputs and starts the comparison logic in a separate thread."""
+        # --- Input Validation ---
+        folder = self.folder_path.get()
+        output_csv = self.output_csv_path.get()
+        st_model_name_val = self.st_model_name.get()
+        openai_model_val = self.openai_embed_model.get()
+        openai_key_val = self.openai_key.get()
+        wmd_path_val = self.wmd_model_path.get()
+
+        try: max_files = self.max_files_var.get()
+        except tk.TclError: messagebox.showerror("Input Error", "Invalid value for Max Files. Please enter a number."); return
+        if not folder or not os.path.isdir(folder): messagebox.showerror("Input Error", "Please select a valid input folder."); return
+        if not output_csv: messagebox.showerror("Output Error", "Please specify an output CSV file path."); return
+        if not st_model_name_val and ST_AVAILABLE: messagebox.showwarning("Input Warning", "Sentence Transformer model name is empty. ST Cosine Similarity will be skipped.");
+        if not openai_model_val and OPENAI_AVAILABLE and openai_key_val: messagebox.showwarning("Input Warning", "OpenAI Embedding model name is empty. OpenAI Cosine Similarity will be skipped.");
+        if openai_key_val and not OPENAI_AVAILABLE: messagebox.showerror("Dependency Error", "OpenAI API Key provided, but the 'openai' library is missing or outdated (needs v1+). Install with 'pip install --upgrade openai'."); return
+        if wmd_path_val and (not GENSIM_AVAILABLE or not POT_AVAILABLE): messagebox.showerror("Dependency Error", f"WMD model path provided, but required libraries are missing: {WMD_MESSAGE}. Install 'gensim' and 'POT'."); return
+        if wmd_path_val and not os.path.isfile(wmd_path_val): messagebox.showerror("Input Error", f"Specified WMD model file not found: {wmd_path_val}"); return
+        if max_files < 2: messagebox.showerror("Input Error", "Max files must be at least 2 for pairwise comparison."); return
+
+        # Check output directory writability
+        output_dir = os.path.dirname(output_csv)
+        if not os.path.isdir(output_dir):
+            try:
+                os.makedirs(output_dir, exist_ok=True)
+                self.status_queue.put(("log", f"Created output directory: {output_dir}"))
+            except Exception as e:
+                messagebox.showerror("Output Error", f"Cannot create output directory:\n{output_dir}\nError: {e}"); return
+        elif not os.access(output_dir, os.W_OK):
+             messagebox.showerror("Output Error", f"Output directory is not writable:\n{output_dir}"); return
+
+        # --- Prepare GUI and Start Thread ---
+        self.run_button.config(state=tk.DISABLED) # Disable button during run
+        self.status_queue.put(("clear_log", None)) # Clear previous logs
+        self.status_queue.put(("log", f"--- Starting Optimized Batch Comparison ---"))
+        self.status_queue.put(("log", f"Input Folder: {folder}"))
+        self.status_queue.put(("log", f"Max Files: {max_files}"))
+        self.status_queue.put(("log", f"Output CSV: {output_csv}"))
+        self.status_queue.put(("log", f"ST Model: {st_model_name_val if st_model_name_val else 'N/A'}"))
+        self.status_queue.put(("log", f"OpenAI Model: {openai_model_val if openai_key_val and openai_model_val else 'N/A'}"))
+        self.status_queue.put(("log", f"WMD Model: {os.path.basename(wmd_path_val) if wmd_path_val else 'N/A'}"))
+        self.status_queue.put(("status", "Starting..."))
+        self.batch_results = [] # Clear previous results
+
+        # Pass necessary config values to the background thread
+        threading.Thread(target=self.run_batch_comparison_logic,
+                         args=(folder, output_csv, max_files,
+                               st_model_name_val, openai_key_val, openai_model_val, wmd_path_val),
+                         daemon=True).start()
+
+    # ================================================================
+    # <<< CORE OPTIMIZED BATCH LOGIC with GPU Support >>>
+    # ================================================================
+    def run_batch_comparison_logic(self, folder_path, output_csv_path, max_files,
+                                   st_model_name, openai_key_val, openai_embed_model_name, wmd_path_val):
+        # --- Initialize ---
+        wmd_model_instance = None
+        st_model_instance = None
+        openai_client = None
+        file_data_cache = {} # Store: {fpath: {'content':..., 'tokens_simple':..., 'tokens_wmd':..., 'metrics':{...}}}
+        st_embeddings = {}   # Store: {fpath: embedding_vector (CPU tensor)}
+        openai_embeddings = {}# Store: {fpath: embedding_vector (list or numpy array)}
+        all_results_data = []
+        start_time_total = time.time()
+        compute_device = 'cpu' # Default device
+
+        # --- Determine Device for Torch Models ---
+        if TORCH_AVAILABLE:
+            if torch.cuda.is_available():
+                try:
+                    # Basic CUDA check
+                    _ = torch.tensor([1.0]).cuda()
+                    compute_device = 'cuda'
+                    self.status_queue.put(("log", f"CUDA GPU detected ({torch.cuda.get_device_name(0)}). Will use GPU for ST/BERTScore."))
+                except Exception as cuda_err:
+                    self.status_queue.put(("log", f"CUDA detected but initialization failed: {cuda_err}. Falling back to CPU."))
+                    compute_device = 'cpu'
+            else:
+                self.status_queue.put(("log", "CUDA GPU not detected or Torch configured incorrectly. Using CPU."))
+        else:
+            self.status_queue.put(("log", "Torch library missing. Models requiring Torch will use CPU if possible or fail."))
+
+        # Device for BERTScore (passed to function) - can be overridden if needed
+        bert_device = compute_device
+        # Device for Sentence Transformers loading and initial encoding
+        st_device = compute_device
+        # Default BERT model (could be made configurable)
+        bert_model_type = 'bert-base-uncased' # Default, common choice for BERTScore
+
+        max_workers_to_use = max(1, MAX_WORKERS) # Ensure at least 1 worker for thread pool
+
+        try:
+            # --- 1. Scan Files ---
+            self.status_queue.put(("status", "Scanning folder..."))
+            self.status_queue.put(("log", f"Scanning folder for .txt files: {folder_path}"))
+            try:
+                # List files, sort for consistent order, filter for .txt
+                all_files_found = sorted([
+                    f for f in os.listdir(folder_path)
+                    if f.lower().endswith('.txt') and os.path.isfile(os.path.join(folder_path, f))
+                ])
+            except Exception as e:
+                raise ValueError(f"Error scanning folder {folder_path}: {e}")
+
+            if len(all_files_found) < 2:
+                raise ValueError(f"Found {len(all_files_found)} .txt files. Need at least 2 for comparison.")
+
+            # Select up to max_files
+            selected_files = all_files_found[:max_files]
+            file_paths = [os.path.join(folder_path, f) for f in selected_files]
+            num_files = len(file_paths)
+
+            self.status_queue.put(("log", f"Found {len(all_files_found)} total .txt files; selected {num_files} for processing: {', '.join(selected_files)}"))
+            if num_files < 2: # Should be caught above, but double-check
+                 raise ValueError(f"Selected only {num_files} file(s). Need at least 2 for comparison.")
+
+            # --- 2. Initial File Processing (Caching & Per-File Metrics) ---
+            self.status_queue.put(("status", f"Processing {num_files} files (metrics & cache)..."))
+            self.status_queue.put(("log", f"--- Stage 1/6: Pre-processing {num_files} files (Read, Metrics, Tokenize, Cache) ---"))
+            initial_proc_start = time.time()
+            texts_for_embedding = {} # {fpath: text_content} - only store if embedding needed
+
+            for i, fpath in enumerate(file_paths):
+                fname = os.path.basename(fpath)
+                self.status_queue.put(("status", f"Processing file {i+1}/{num_files}: {fname}"))
+                self.status_queue.put(("log", f"  Processing {fname}..."))
+
+                content, read_err = read_file(fpath)
+                fog_val, passive_val = 'N/A', 'N/A'
+                tokens_simple_val, tokens_wmd_val = [], []
+                file_metrics = {} # Store individual file metrics here
+
+                if read_err:
+                    self.status_queue.put(("log", f"    ERROR reading {fname}: {read_err}"))
+                    file_metrics['gunning_fog'] = 'ReadError'
+                    file_metrics['passive_ratio'] = 'ReadError'
+                    content = None # Mark content as None on read error
+                elif not content or content.isspace():
+                    self.status_queue.put(("log", f"    File {fname} is empty."))
+                    file_metrics['gunning_fog'] = 'EmptyFile'
+                    file_metrics['passive_ratio'] = 0.0 # Passive ratio is 0 for empty file
+                    content = "" # Use empty string for consistency downstream
+                else:
+                    # Calculate Readability Metrics
+                    readability_res, read_err_msg = calculate_readability(content)
+                    fog_val = readability_res.get('gunning_fog', 'Error')
+                    if read_err_msg: self.status_queue.put(("log", f"    Readability warning for {fname}: {read_err_msg}"))
+                    file_metrics['gunning_fog'] = fog_val
+
+                    # Calculate Passive Voice Ratio
+                    passive_ratio, passive_err_msg = calculate_passive_voice_ratio(content)
+                    passive_val = passive_ratio
+                    if passive_err_msg: self.status_queue.put(("log", f"    Passive voice warning for {fname}: {passive_err_msg}"))
+                    file_metrics['passive_ratio'] = passive_val
+
+                    # Preprocess Tokens (Simple for Jaccard)
+                    tokens_simple_val = preprocess_text_simple(content)
+
+                    # Preprocess Tokens for WMD (only if WMD path is valid)
+                    if wmd_path_val:
+                        tokens_wmd_val = preprocess_text_wmd(content)
+
+                    # Store non-empty text for batch embedding
+                    if content.strip():
+                       texts_for_embedding[fpath] = content
+
+                # Store results in cache
+                file_data_cache[fpath] = {
+                    'content': content, # Store raw content (or "" if empty, None if read error)
+                    'tokens_simple': tokens_simple_val,
+                    'tokens_wmd': tokens_wmd_val,
+                    'metrics': file_metrics
+                }
+
+                # Log formatted results concisely
+                fog_str = file_metrics.get('gunning_fog', 'N/A')
+                pass_str = file_metrics.get('passive_ratio', 'N/A')
+                if isinstance(pass_str, (float, int, np.number)): pass_str = f"{pass_str:.2%}"
+                if isinstance(fog_str, (float, int, np.number)): fog_str = f"{fog_str:.2f}"
+                log_msg_metrics = f"Fog={fog_str}, Passive={pass_str}"
+                log_msg_tokens = f"SimpleTokens={len(tokens_simple_val)}, WmdTokens={len(tokens_wmd_val)}"
+                self.status_queue.put(("log", f"    -> Metrics: {log_msg_metrics} | Tokens: {log_msg_tokens}"))
+
+            initial_proc_duration = time.time() - initial_proc_start
+            self.status_queue.put(("log", f"--- Stage 1 completed in {initial_proc_duration:.2f}s ---"))
+
+            # --- 3. Load Models ---
+            self.status_queue.put(("status", "Loading models..."))
+            self.status_queue.put(("log", f"--- Stage 2/6: Loading Models (Target Device: {compute_device}) ---"))
+            load_models_start = time.time()
+
+            # Load WMD Model (Always on CPU)
+            if wmd_path_val and GENSIM_AVAILABLE and POT_AVAILABLE:
+                if os.path.exists(wmd_path_val):
+                    self.status_queue.put(("log", f"  Loading WMD model (CPU): {os.path.basename(wmd_path_val)}..."))
+                    try:
+                        from gensim.models import KeyedVectors, Word2Vec, FastText # Import common types
+                        # Determine loading method based on file extension or type
+                        load_func = None
+                        is_binary = False
+                        if wmd_path_val.lower().endswith(".bin"):
+                            load_func = KeyedVectors.load_word2vec_format
+                            is_binary = True
+                        elif wmd_path_val.lower().endswith(".vec") or wmd_path_val.lower().endswith(".txt"):
+                             load_func = KeyedVectors.load_word2vec_format
+                             is_binary = False
+                        elif wmd_path_val.lower().endswith(".model"):
+                             # Try loading as a full model first, then KeyedVectors
+                             try: wmd_model_instance = Word2Vec.load(wmd_path_val)
+                             except Exception:
+                                 try: wmd_model_instance = FastText.load(wmd_path_val)
+                                 except Exception: load_func = KeyedVectors.load # Fallback to KV load
+                        else: # Assume native Gensim KeyedVectors format if no known extension
+                             load_func = KeyedVectors.load
+
+                        if load_func: # If format required specific load function
+                             kwargs = {'binary': is_binary} if load_func == KeyedVectors.load_word2vec_format else {}
+                             wmd_model_instance = load_func(wmd_path_val, **kwargs)
+
+                        # Final check if model loaded
+                        if wmd_model_instance:
+                            self.status_queue.put(("log", f"  WMD model loaded successfully. Vocab size: {len(wmd_model_instance.key_to_index if hasattr(wmd_model_instance, 'key_to_index') else len(wmd_model_instance.wv.key_to_index))}"))
+                        else:
+                             raise ValueError("Model loading resulted in None.") # Should be caught below
+
+                    except Exception as e:
+                        self.status_queue.put(("log", f"  ERROR loading WMD model: {e}"))
+                        traceback.print_exc()
+                        wmd_model_instance = None # Ensure it's None if loading failed
+                else:
+                    self.status_queue.put(("log", f"  WMD path specified, but file not found: {wmd_path_val}. Skipping WMD."))
+            elif wmd_path_val:
+                self.status_queue.put(("log", f"  WMD path specified, but required libraries missing ({WMD_MESSAGE}). Skipping WMD."))
+
+            # Load Sentence Transformer Model (on target device: st_device)
+            if ST_AVAILABLE and st_model_name and any(texts_for_embedding.values()):
+                self.status_queue.put(("log", f"  Loading ST model: {st_model_name} onto device '{st_device}'..."))
+                try:
+                    # Load the model, specifying the device
+                    st_model_instance = SentenceTransformer(st_model_name, device=st_device)
+                    # You could add a check here, e.g., st_model_instance.encode(["test sentence"])
+                    # to ensure it loaded correctly, but might add overhead.
+                    self.status_queue.put(("log", f"  ST model '{st_model_name}' loaded successfully onto '{st_model_instance.device}'."))
+                except Exception as e:
+                    self.status_queue.put(("log", f"  ERROR loading ST model '{st_model_name}' onto device '{st_device}': {e}"))
+                    traceback.print_exc()
+                    st_model_instance = None # Ensure it's None if loading failed
+            elif ST_AVAILABLE and st_model_name:
+                 self.status_queue.put(("log", "  ST model specified, but no non-empty text files found to embed. Skipping ST loading/embedding."))
+            elif ST_AVAILABLE and not st_model_name:
+                 self.status_queue.put(("log", "  Sentence Transformer library available, but no model name specified. Skipping ST loading/embedding."))
+
+
+            # Setup OpenAI Client
+            if OPENAI_AVAILABLE and openai_key_val and openai_embed_model_name and any(texts_for_embedding.values()):
+                self.status_queue.put(("log", f"  Setting up OpenAI client for model '{openai_embed_model_name}'..."))
+                try:
+                    openai_client = OpenAI(api_key=openai_key_val)
+                    # Optionally, test the client/key with a dummy call if needed, but adds cost/time
+                    # openai_client.models.list()
+                    self.status_queue.put(("log", "  OpenAI client setup successful."))
+                except Exception as e:
+                     self.status_queue.put(("log", f"  ERROR setting up OpenAI client: {e}"))
+                     traceback.print_exc()
+                     openai_client = None
+            elif OPENAI_AVAILABLE and openai_key_val and openai_embed_model_name:
+                 self.status_queue.put(("log", "  OpenAI configured, but no non-empty text files found to embed. Skipping OpenAI embedding."))
+            elif OPENAI_AVAILABLE and (not openai_key_val or not openai_embed_model_name):
+                 self.status_queue.put(("log", "  OpenAI library available, but API key or model name missing. Skipping OpenAI setup/embedding."))
+
+            load_models_duration = time.time() - load_models_start
+            self.status_queue.put(("log", f"--- Stage 2 completed in {load_models_duration:.2f}s ---"))
+
+            # --- 4. Batch Embeddings ---
+            self.status_queue.put(("status", "Calculating embeddings..."))
+            self.status_queue.put(("log", f"--- Stage 3/6: Calculating Embeddings ---"))
+            embedding_start = time.time()
+            # Use only file paths that have corresponding non-empty text content
+            ordered_fpaths_for_embedding = list(texts_for_embedding.keys())
+            ordered_texts_for_embedding = [texts_for_embedding[fp] for fp in ordered_fpaths_for_embedding]
+
+            # Batch ST Embeddings (use st_device, store resulting tensors on CPU)
+            if st_model_instance and ordered_texts_for_embedding:
+                self.status_queue.put(("log", f"  Calculating ST embeddings using device '{st_model_instance.device}' for {len(ordered_texts_for_embedding)} documents..."))
+                try:
+                    # Perform encoding. This might take time, especially on CPU or with large models/datasets.
+                    computed_st_embeddings = st_model_instance.encode(
+                        ordered_texts_for_embedding,
+                        convert_to_tensor=True,
+                        show_progress_bar=False # Disable internal progress bar for cleaner logs
+                    )
+                    # Move embeddings to CPU memory for storage and sharing between subsequent parallel tasks
+                    st_embeddings = {fp: emb.cpu() for fp, emb in zip(ordered_fpaths_for_embedding, computed_st_embeddings)}
+                    self.status_queue.put(("log", f"  ST embeddings calculated ({len(st_embeddings)} vectors)."))
+                except Exception as e:
+                    self.status_queue.put(("log", f"  ERROR during ST batch encoding: {e}"))
+                    traceback.print_exc()
+                    st_embeddings = {} # Clear potentially partial results on error
+                    # Consider trying to free GPU memory if a CUDA OOM occurred
+                    if "cuda" in str(e).lower() and compute_device == 'cuda':
+                        del computed_st_embeddings # Remove reference
+                        torch.cuda.empty_cache()
+                        self.status_queue.put(("log", "  Attempted to clear CUDA cache after ST encoding error."))
+
+            # Batch OpenAI Embeddings
+            if openai_client and ordered_texts_for_embedding:
+                self.status_queue.put(("log", f"  Calculating OpenAI embeddings using model '{openai_embed_model_name}' for {len(ordered_texts_for_embedding)} documents..."))
+                try:
+                    # OpenAI API has limits on input size and token count per request.
+                    # Simple approach: process all at once if count is reasonable.
+                    # For very large numbers, batching requests might be needed.
+                    # Clean texts slightly (replace newlines, strip whitespace)
+                    cleaned_texts = [t.replace("\n", " ").strip() for t in ordered_texts_for_embedding]
+
+                    # Call OpenAI API
+                    response = openai_client.embeddings.create(
+                        input=cleaned_texts,
+                        model=openai_embed_model_name
+                    )
+
+                    # Store embeddings (as lists or numpy arrays)
+                    computed_openai_embeddings = [item.embedding for item in response.data]
+                    if len(computed_openai_embeddings) == len(ordered_fpaths_for_embedding):
+                         openai_embeddings = {fp: emb for fp, emb in zip(ordered_fpaths_for_embedding, computed_openai_embeddings)}
+                         self.status_queue.put(("log", f"  OpenAI embeddings calculated ({len(openai_embeddings)} vectors)."))
+                    else:
+                        self.status_queue.put(("log", f"  WARNING: OpenAI returned {len(computed_openai_embeddings)} embeddings, but expected {len(ordered_fpaths_for_embedding)}. Results may be incomplete."))
+                        # Try to match based on order, but it's risky
+                        openai_embeddings = {fp: emb for fp, emb in zip(ordered_fpaths_for_embedding[:len(computed_openai_embeddings)], computed_openai_embeddings)}
+
+                except Exception as e:
+                    self.status_queue.put(("log", f"  ERROR during OpenAI batch embedding: {e}"))
+                    traceback.print_exc()
+                    openai_embeddings = {}
+
+            embedding_duration = time.time() - embedding_start
+            self.status_queue.put(("log", f"--- Stage 3 completed in {embedding_duration:.2f}s ---"))
+
+            # --- 5. Prepare and Run Pairwise Comparisons (Parallel - Excluding WMD) ---
+            file_pairs = list(combinations(file_paths, 2))
+            total_pairs = len(file_pairs)
+            if total_pairs == 0:
+                # This case should only happen if num_files < 2, which is checked earlier.
+                raise ValueError("Internal Error: No file pairs generated for comparison.")
+
+            self.status_queue.put(("status", f"Calculating metrics (excl. WMD) for {total_pairs} pairs (parallel)..."))
+            self.status_queue.put(("log", f"--- Stage 4/6: Calculating Pairwise Metrics (excl. WMD) ---"))
+            self.status_queue.put(("log", f"  Comparing {total_pairs} pairs using up to {max_workers_to_use} parallel workers."))
+            self.status_queue.put(("log", f"  (Using device '{bert_device}' for BERTScore calculations within workers)"))
+            pairwise_start = time.time()
+            all_results_data = [] # Re-initialize list to store results from threads
+
+            # Prepare arguments for each parallel task
+            # Pass all necessary data: file paths, caches, embeddings, and devices
+            task_args = [
+                (fp1, fp2, file_data_cache, st_embeddings, openai_embeddings, bert_device, bert_model_type)
+                for fp1, fp2 in file_pairs
+            ]
+
+            # Use ThreadPoolExecutor for I/O bound tasks (like reading cache) and CPU-bound tasks (like Jaccard)
+            # GPU tasks (like BERTScore, ST encode) release the GIL, allowing some parallelism.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers_to_use) as executor:
+                # Use executor.map for simplicity if order doesn't matter or for collecting all results
+                results_iterator = executor.map(process_single_pair, task_args)
+
+                processed_count = 0
+                # Process results as they complete
+                for result in results_iterator:
+                    all_results_data.append(result) # Collect results
+                    processed_count += 1
+                    # Update status periodically
+                    if processed_count % 20 == 0 or processed_count == total_pairs: # Update less frequently
+                        self.status_queue.put(("status", f"Processed {processed_count}/{total_pairs} pairs (metrics excl. WMD)..."))
+                        # Log progress occasionally
+                        if processed_count % 100 == 0 or processed_count == total_pairs:
+                             self.status_queue.put(("log", f"  ... processed {processed_count}/{total_pairs} pairs"))
+
+            pairwise_duration = time.time() - pairwise_start
+            self.status_queue.put(("log", f"--- Stage 4 completed in {pairwise_duration:.2f}s ---"))
+
+            # --- 6. Calculate WMD Sequentially (CPU Only) ---
+            if wmd_model_instance:
+                 self.status_queue.put(("status", f"Calculating WMD for {total_pairs} pairs (sequentially on CPU)..."))
+                 self.status_queue.put(("log", f"--- Stage 5/6: Calculating WMD Sequentially (CPU) ---"))
+                 wmd_start_seq = time.time()
+                 wmd_processed_count = 0
+
+                 for result_dict in all_results_data: # Iterate through results collected from parallel tasks
+                     # Only calculate if WMD is marked 'Pending' and no critical error occurred earlier
+                     if result_dict.get('WMD') != 'Pending':
+                         continue
+
+                     fname1 = result_dict['File1']
+                     fname2 = result_dict['File2']
+                     # Construct full paths using the folder_path
+                     fpath1_key = os.path.join(folder_path, fname1)
+                     fpath2_key = os.path.join(folder_path, fname2)
+
+                     # Retrieve cached WMD tokens
+                     data1 = file_data_cache.get(fpath1_key)
+                     data2 = file_data_cache.get(fpath2_key)
+
+                     wmd_score = float('inf') # Default to infinity (error/no overlap)
+                     wmd_err = "WMD calculation skipped or failed." # Default error
+
+                     # Check if data and tokens are available
+                     if data1 and data2 and 'tokens_wmd' in data1 and 'tokens_wmd' in data2:
+                         tokens1_wmd = data1['tokens_wmd']
+                         tokens2_wmd = data2['tokens_wmd']
+
+                         # Proceed only if both token lists are non-empty
+                         if tokens1_wmd and tokens2_wmd:
+                             wmd_score, wmd_err_msg = calculate_wmd(tokens1_wmd, tokens2_wmd, wmd_model_instance)
+                             if wmd_err_msg:
+                                 wmd_err = f"WMD_Err (Seq): {wmd_err_msg}"
+                                 # Ensure score reflects error
+                                 if wmd_score is None or wmd_score != float('inf'): wmd_score = float('inf')
+                             else:
+                                  wmd_err = None # No error for this pair
+
+                         else:
+                             wmd_err = "WMD_Err (Seq): Empty WMD tokens for one/both files after preprocessing."
+                             wmd_score = float('inf') # Treat as infinite distance
+                     else:
+                         wmd_err = "WMD_Err (Seq): Missing cached WMD tokens for one/both files."
+                         wmd_score = None # Use None to indicate it couldn't be run (vs. Inf which means run but no overlap/error)
+
+                     # Update the result dictionary
+                     result_dict['WMD'] = wmd_score
+                     if wmd_err:
+                         # Append WMD error to existing errors
+                         result_dict['Error'] = (result_dict.get('Error') or "") + f"; {wmd_err}"
+
+                     wmd_processed_count += 1
+                     if wmd_processed_count % 20 == 0 or wmd_processed_count == total_pairs: # Update less frequently
+                          self.status_queue.put(("status", f"Calculated WMD for {wmd_processed_count}/{total_pairs} pairs..."))
+                          if wmd_processed_count % 100 == 0 or wmd_processed_count == total_pairs:
+                               self.status_queue.put(("log", f"  ... calculated WMD for {wmd_processed_count}/{total_pairs} pairs"))
+
+
+                 wmd_seq_duration = time.time() - wmd_start_seq
+                 self.status_queue.put(("log", f"--- Stage 5 completed in {wmd_seq_duration:.2f}s ---"))
+            else:
+                 # If no WMD model or path, mark WMD as None (N/A) for all pairs where it's pending
+                 self.status_queue.put(("log", f"--- Stage 5/6: Skipping WMD (no model loaded or path specified) ---"))
+                 for result_dict in all_results_data:
+                     if result_dict.get('WMD') == 'Pending':
+                          result_dict['WMD'] = None # Indicate not calculated
+
+            # --- 7. Write Results to CSV ---
+            if not all_results_data:
+                 # This should ideally not happen if initial checks passed
+                 raise ValueError("No pairwise results were generated.")
+
+            self.status_queue.put(("status", f"Writing {len(all_results_data)} results to CSV..."))
+            self.status_queue.put(("log", f"--- Stage 6/6: Writing Results to CSV ---"))
+            self.status_queue.put(("log", f"  Saving results to: {output_csv_path}"))
+            csv_start = time.time()
+
+            # Define the desired order of columns
+            final_headers = [
+                'File1', 'File2',
+                'Jaccard', 'Cosine_ST', 'Cosine_OpenAI', 'BERTScore_F1', 'Hybrid_Jacc_BERT', 'WMD', # Similarity Metrics
+                'File1_GunningFog', 'File1_PassivePerc', # File 1 Metrics
+                'File2_GunningFog', 'File2_PassivePerc', # File 2 Metrics
+                'Error' # Error column last
+            ]
+
+            try:
+                with open(output_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+                    # Use the defined headers; ignore any extra keys found in data (shouldn't be any)
+                    writer = csv.DictWriter(csvfile, fieldnames=final_headers, extrasaction='ignore')
+                    writer.writeheader()
+
+                    for row_data in all_results_data:
+                         formatted_row = {}
+                         for key in final_headers: # Iterate through desired headers
+                             value = row_data.get(key) # Get value safely
+
+                             # Format based on key/type
+                             if key in ['File1', 'File2', 'Error']:
+                                 formatted_row[key] = value if value is not None else ""
+                             elif key in ['File1_PassivePerc', 'File2_PassivePerc']:
+                                 if isinstance(value, (float, int, np.number)) and not np.isnan(value):
+                                     formatted_row[key] = f"{value:.2%}" # Format as percentage
+                                 else: formatted_row[key] = str(value) if value is not None else "N/A" # Handle N/A, Error, etc.
+                             elif value is None:
+                                 formatted_row[key] = "N/A"
+                             elif value == float('inf'):
+                                 formatted_row[key] = "Inf/Error" # Consistent representation for WMD errors/no overlap
+                             elif isinstance(value, (float, int, np.number)):
+                                 if np.isnan(value): formatted_row[key] = "NaN" # Explicitly handle NaN
+                                 else:
+                                     # Use more precision for similarity scores, less for readability
+                                     precision = 6 if key not in ['File1_GunningFog', 'File2_GunningFog'] else 2
+                                     try: formatted_row[key] = f"{float(value):.{precision}f}"
+                                     except (ValueError, TypeError): formatted_row[key] = str(value) # Fallback
+                             else: # Catch-all for other types (e.g., string error messages in metric columns)
+                                 formatted_row[key] = str(value)
+
+                         writer.writerow(formatted_row)
+
+            except PermissionError:
+                raise IOError(f"Permission denied writing CSV file '{output_csv_path}'. Is the file open in another application (e.g., Excel)?")
+            except Exception as e:
+                 raise IOError(f"Error writing CSV file '{output_csv_path}': {e}")
+
+            csv_duration = time.time() - csv_start
+            self.status_queue.put(("log", f"--- Stage 6 completed in {csv_duration:.2f}s ---"))
+
+            # --- Final Success Logging ---
+            total_script_duration = time.time() - start_time_total
+            self.status_queue.put(("log", f"--- Batch Comparison Complete ---"))
+            success_message = f"Successfully processed {num_files} files and compared {len(all_results_data)} pairs.\nResults saved to:\n{output_csv_path}"
+            self.status_queue.put(("log", success_message))
+            self.status_queue.put(("log", f"Total time taken: {total_script_duration:.2f} seconds."))
+            self.status_queue.put(("status", "Batch comparison finished successfully."))
+            # Show success message box via the main thread queue
+            self.status_queue.put(("info_messagebox", ("Success", success_message)))
+
+        except Exception as e: # Catch errors from any stage
+            error_message = f"FATAL BATCH ERROR: {type(e).__name__}: {e}"
+            # Print full traceback to console for detailed debugging
+            print("="*60)
+            print(error_message)
+            traceback.print_exc()
+            print("="*60)
+
+            # Log concise error in GUI log
+            self.status_queue.put(("log", f"!!! {error_message} !!!"))
+
+            # Add specific advice based on common errors
+            err_str = str(e).lower()
+            if "cuda out of memory" in err_str:
+                 advice = "CUDA Out of Memory detected. Try a smaller model (ST/BERT), reduce 'Max Files', close other GPU-heavy apps, or run on CPU."
+                 self.status_queue.put(("log", f"!!! Advice: {advice} !!!"))
+                 error_message += f"\n\nAdvice: {advice}"
+            elif "memory" in err_str and "wmd" in traceback.format_exc().lower():
+                 advice = "Potential Memory Error during WMD calculation. Ensure sufficient RAM for the WMD model and data. Try processing fewer files if RAM is limited."
+                 self.status_queue.put(("log", f"!!! Advice: {advice} !!!"))
+                 error_message += f"\n\nAdvice: {advice}"
+            elif "meta tensor" in err_str:
+                 advice = "BERTScore 'meta tensor' error. This often relates to library versions. Try updating PyTorch, Transformers, and BERTScore (`pip install --upgrade ...`). If using GPU, forcing CPU might be a workaround."
+                 self.status_queue.put(("log", f"!!! Advice: {advice} !!!"))
+                 error_message += f"\n\nAdvice: {advice}"
+            elif isinstance(e, IOError) and "Permission denied" in str(e):
+                 advice = "Cannot write the output CSV file. Please ensure the file is not open in another program (like Excel) and that you have write permissions to the directory."
+                 # Error message already contains this info
+                 self.status_queue.put(("log", f"!!! Advice: {advice} !!!"))
+
+            self.status_queue.put(("log", "Batch processing halted due to error. Check log and console for details."))
+            self.status_queue.put(("status", "Error during batch comparison. Check logs."))
+            # Show error message box via the main thread queue
+            self.status_queue.put(("error_messagebox", ("Batch Processing Error", f"An error occurred:\n{error_message}\n\nPlease check the log panel and console output for more details.")))
+
+        finally: # Cleanup and final GUI updates
+            # --- Clear large data structures ---
+            del file_data_cache, st_embeddings, openai_embeddings, all_results_data
+            if wmd_model_instance: del wmd_model_instance
+            if st_model_instance: del st_model_instance
+            if openai_client: del openai_client
+
+            # --- Attempt to clear CUDA cache if GPU was used ---
+            if compute_device == 'cuda' and TORCH_AVAILABLE and torch.cuda.is_available():
+                  try:
+                      torch.cuda.empty_cache()
+                      self.status_queue.put(("log", "Attempted to clear CUDA cache."))
+                  except Exception as cache_e:
+                      self.status_queue.put(("log", f"Note: Error trying to clear CUDA cache: {cache_e}"))
+
+            # --- Re-enable the run button via the queue ---
+            self.status_queue.put(("enable_run_button", None))
+
+
+# =============================================================================
+# Main Execution Block
+# =============================================================================
+if __name__ == "__main__":
+    # --- Load .env ---
+    try:
+        # Use importlib.util to avoid hard dependency on python-dotenv
+        import importlib.util
+        dotenv_spec = importlib.util.find_spec("dotenv")
+        if dotenv_spec:
+            from dotenv import load_dotenv
+            # Try to find .env in the script's directory or current working directory
+            script_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in locals() else os.getcwd()
+            dotenv_path_script = os.path.join(script_dir, '.env')
+            dotenv_path_cwd = os.path.join(os.getcwd(), '.env')
+
+            loaded_env = False
+            if os.path.exists(dotenv_path_script):
+                load_dotenv(dotenv_path=dotenv_path_script, override=True) # Override existing env vars
+                print(f"Loaded environment variables from: {dotenv_path_script}")
+                loaded_env = True
+            elif os.path.exists(dotenv_path_cwd):
+                load_dotenv(dotenv_path=dotenv_path_cwd, override=True)
+                print(f"Loaded environment variables from: {dotenv_path_cwd}")
+                loaded_env = True
+
+            if loaded_env:
+                # Update defaults from .env if found - allows easy configuration
+                DEFAULT_OPENAI_KEY = os.getenv("OPENAI_API_KEY", DEFAULT_OPENAI_KEY)
+                DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_EMBED_MODEL", DEFAULT_OPENAI_MODEL)
+                DEFAULT_WMD_MODEL_PATH = os.getenv("WMD_MODEL_PATH", DEFAULT_WMD_MODEL_PATH)
+                DEFAULT_ST_MODEL = os.getenv("ST_MODEL_NAME", DEFAULT_ST_MODEL)
+                MAX_WORKERS = int(os.getenv("MAX_COMPARISON_WORKERS", MAX_WORKERS))
+            else:
+                print("No .env file found in script directory or CWD. Using system environment variables or GUI input.")
+        else:
+             print("python-dotenv library not installed (`pip install python-dotenv`), cannot load .env file.")
+    except Exception as e:
+        print(f"Error loading .env file: {e}")
+
+    # --- Run Tkinter App ---
+    root = tk.Tk()
+    app = BatchComparerApp(root)
+    root.mainloop()
