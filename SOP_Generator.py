@@ -156,7 +156,7 @@ APP_VERSION = "2.9.6 (Structure/Diff View)"
 # --- API Keys ---
 # It's recommended to use environment variables for API keys
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY","AIzaSyCljrs3_arkrWBdyAddv7cZcGPA8AKVH34")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # --- WMD Model Path ---
 # !!! IMPORTANT: CHANGE THIS PATH or set the WMD_MODEL_PATH environment variable !!!
